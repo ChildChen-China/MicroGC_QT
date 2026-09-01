@@ -3,7 +3,6 @@
 
 #include <QWidget>
 #include <QVector>
-#include <QThread>
 #include <QFile>
 #include <QTextStream>
 #include <QTimer>
@@ -21,46 +20,9 @@ class InteractivePlot;
 class Communication;
 class QPushButton;
 
-// 文件保存工作类（在独立线程中运行）
-class SaveWorker : public QObject
-{
-    Q_OBJECT
-public:
-    explicit SaveWorker(QObject *parent = nullptr);
-    ~SaveWorker();
-
-public slots:
-    void startSaving(const QString &fileName, int durationMinutes);
-    void stopSaving();
-    void appendData(const QString &dataLine);
-
-private:
-    QFile m_file;
-    QTextStream m_stream;
-    QTimer *m_timer;
-};
-
-// 滤波工作类（在独立线程中运行）
-class FilterWorker : public QObject
-{
-    Q_OBJECT
-public:
-    explicit FilterWorker(QObject *parent = nullptr);
-
-public slots:
-    void processFilter(const QVector<double> &time,
-                       const QVector<double> &rawA,
-                       const QVector<double> &rawB,
-                       const QVector<double> &rawAB,
-                       int averagePoints);
-
-signals:
-    void filterCompleted(const QVector<double> &filtA,
-                         const QVector<double> &filtB,
-                         const QVector<double> &filtAB);
-};
-
-// 信号显示面板类（声明）
+//==========================================================
+// SignalPlotPanel - 单个信号显示面板（含缩放、滤波切换等）
+//==========================================================
 class SignalPlotPanel : public QGroupBox
 {
     Q_OBJECT
@@ -95,10 +57,12 @@ private:
     QVector<double> m_snapshotX, m_snapshotRawY, m_snapshotFiltY;
     bool m_inverted;
     bool m_hasSnapshot;
-    bool m_xRangeInitialized = false;
-    bool m_rangeInitialized = false;
+    bool m_rangeInitialized = false; // 是否已初始化坐标轴范围
 };
 
+//==========================================================
+// MonitorTab - 主监视标签页
+//==========================================================
 class MonitorTab : public QWidget
 {
     Q_OBJECT
@@ -111,8 +75,8 @@ public:
     void setCollectPoints(int points);
     void setAveragePoints(int points);
 
-    int getParameter(const QString &key) const;                 // 读取参数值
-    void setParameter(const QString &key, int value);           // 设置参数值（不发送命令）
+    int getParameter(const QString &key) const;
+    void setParameter(const QString &key, int value);
 
 public slots:
     void startAutoSave();
@@ -123,10 +87,9 @@ public slots:
     void setChannelAVisible(bool visible);
     void setChannelBVisible(bool visible);
     void setChannelABVisible(bool visible);
-    void applyGlobalParameters();   // 发送所有设置命令
+    void applyGlobalParameters();
     void setDetectorEnabled(bool enabled);
-    void onFastDataUpdated();
-    void onSlowDataUpdated();
+
 signals:
     void logMessage(const QString &type, const QString &event);
 
@@ -146,42 +109,33 @@ private slots:
     void toggleFilterB();
     void toggleFilterAB();
     void updateDisplayLength();
-    void onFilterCompleted(const QVector<double> &filtA,
-                           const QVector<double> &filtB,
-                           const QVector<double> &filtAB);
     void checkSettingFeedback();
 
 private:
     void setupControlPanel(QVBoxLayout *layout);
     void setupSignalPanel(QVBoxLayout *layout);
 
-
+    // ---- 数据缓存 ----
     QVector<double> m_time;
     QVector<double> m_rawA, m_rawB, m_rawAB;
     QVector<double> m_filtA, m_filtB, m_filtAB;
     int m_collectPoints;
     int m_averagePoints;
 
+    // ---- 显示控制 ----
     bool m_showFiltA;
     bool m_showFiltB;
     bool m_showFiltAB;
-
     SignalPlotPanel *m_panelA;
     SignalPlotPanel *m_panelB;
     SignalPlotPanel *m_panelAB;
-
     QPushButton *m_filterBtnA;
     QPushButton *m_filterBtnB;
     QPushButton *m_filterBtnAB;
 
-    QThread *m_saveThread;
-    SaveWorker *m_saveWorker;
-
-    QThread *m_filterThread;
-    FilterWorker *m_filterWorker;
-
     Communication *m_comm;
 
+    // ---- UI 控件 ----
     QPushButton  *m_enableCheck;
     QLabel *m_tempValueLabel;
     QSpinBox *m_tempEdit;
@@ -195,14 +149,12 @@ private:
     QSpinBox  *m_durationSpin;
     QLineEdit *m_pathEdit;
 
+    // ---- 设置验证 ----
     QTimer *m_feedbackTimer;
     quint16 m_pendingTemp, m_pendingPowerA, m_pendingPowerB, m_pendingPrecision;
     quint16 m_pendingLevelA, m_pendingLevelB, m_pendingLevelAB;
     bool m_hasPendingTemp, m_hasPendingPowerA, m_hasPendingPowerB;
     bool m_hasPendingPrecision, m_hasPendingLevelA, m_hasPendingLevelB, m_hasPendingLevelAB;
-
-    int m_lastSavedIndex;
-
     int m_retryTemp = 0;
     int m_retryPowerA = 0;
     int m_retryPowerB = 0;
@@ -210,15 +162,15 @@ private:
     int m_retryLevelA = 0;
     int m_retryLevelB = 0;
     int m_retryLevelAB = 0;
-    QTimer *m_plotTimer;
-    bool m_isSaving = false;
-    qint64 m_startTime;
-    // 用于同步写入的变量
-    bool m_waitingForFilter = false;
-    int m_filtDataLength = 0;   // 当前滤波数据对应的原始数据长度（索引上限）
-    QFile m_saveFile;          // 主线程直接写文件
-    QTextStream m_saveStream;  // 文本流
 
+    // ---- 文件保存（主线程直接写） ----
+    QFile m_saveFile;
+    QTextStream m_saveStream;
+    bool m_isSaving = false;
+    qint64 m_startTime;          // 相对时间起点（毫秒）
+
+    // ---- 绘图刷新定时器 ----
+    QTimer *m_plotTimer;
 };
 
 #endif // MONITORTAB_H

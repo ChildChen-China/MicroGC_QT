@@ -134,7 +134,6 @@ void AutoProcessManager::onProcessTimer()
         break;
 
     case SettingVerify:
-        // 所有设置验证完成后，在 processVerifyQueue 中已处理进入 Heating，此处不会到达
         break;
 
     case Heating:

@@ -28,8 +28,7 @@ InteractivePlot::InteractivePlot(QWidget *parent)
     setPlottingHints(QCP::phFastPolylines);
     // 拖动过程中禁用抗锯齿，提高响应速度
     setNoAntialiasingOnDrag(true);
-    // 如果您的 QCustomPlot 编译时启用了 OpenGL，可以取消下一行注释以利用 GPU 加速
-    // setOpenGl(true);
+
     // ================================
 
     // 创建十字标元素，初始隐藏

@@ -24,7 +24,7 @@ Communication::Communication(QObject *parent)
     , m_valveState(0)
 {
     m_fastTimer->setInterval(50);    // TCD电压快速读取
-    m_slowTimer->setInterval(3000);  // 慢速参数（温度、流量、压力）
+    m_slowTimer->setInterval(1000);  // 慢速参数（温度、流量、压力）
 
     connect(m_fastTimer, &QTimer::timeout, this, &Communication::pollFastData);
     connect(m_slowTimer, &QTimer::timeout, this, &Communication::pollSlowData);
@@ -59,7 +59,7 @@ void Communication::connectToDevice(const QString &ip, quint16 port)
     m_slowClient = new QModbusTcpClient(this);
     m_slowClient->setConnectionParameter(QModbusDevice::NetworkAddressParameter, ip);
     m_slowClient->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
-    m_slowClient->setTimeout(10000);   // 慢速客户端给予更长超时
+    m_slowClient->setTimeout(5000);   // 慢速客户端给予更长超时
     m_slowClient->setNumberOfRetries(3);
     connect(m_slowClient, &QModbusTcpClient::stateChanged, this, &Communication::onSlowStateChanged);
     connect(m_slowClient, &QModbusTcpClient::errorOccurred, this, &Communication::onSlowErrorOccurred);
