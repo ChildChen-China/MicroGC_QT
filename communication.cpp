@@ -2,13 +2,17 @@
 #include <QModbusReply>
 #include <QDateTime>
 #include <QDebug>
+#include <QThread>
 
 Communication::Communication(QObject *parent)
     : QObject(parent)
-    , m_modbusClient(nullptr)
+    , m_fastClient(nullptr)
+    , m_slowClient(nullptr)
     , m_fastTimer(new QTimer(this))
     , m_slowTimer(new QTimer(this))
-    , m_connected(false)
+    , m_fastConnected(false)
+    , m_slowConnected(false)
+    , m_slowBusy(false)
     , m_columnOven1Temp(0)
     , m_flow1(0)
     , m_flow2(0)
@@ -20,7 +24,7 @@ Communication::Communication(QObject *parent)
     , m_valveState(0)
 {
     m_fastTimer->setInterval(50);    // TCD电压快速读取
-    m_slowTimer->setInterval(3000);  // 慢速参数
+    m_slowTimer->setInterval(3000);  // 慢速参数（温度、流量、压力）
 
     connect(m_fastTimer, &QTimer::timeout, this, &Communication::pollFastData);
     connect(m_slowTimer, &QTimer::timeout, this, &Communication::pollSlowData);
@@ -34,45 +38,68 @@ Communication::~Communication()
 
 void Communication::connectToDevice(const QString &ip, quint16 port)
 {
-    if (m_modbusClient) {
-        m_modbusClient->disconnectDevice();
-        m_modbusClient->deleteLater();
+    // 创建快速客户端
+    if (m_fastClient) {
+        m_fastClient->disconnectDevice();
+        m_fastClient->deleteLater();
     }
+    m_fastClient = new QModbusTcpClient(this);
+    m_fastClient->setConnectionParameter(QModbusDevice::NetworkAddressParameter, ip);
+    m_fastClient->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
+    m_fastClient->setTimeout(2000);
+    m_fastClient->setNumberOfRetries(3);
+    connect(m_fastClient, &QModbusTcpClient::stateChanged, this, &Communication::onFastStateChanged);
+    connect(m_fastClient, &QModbusTcpClient::errorOccurred, this, &Communication::onFastErrorOccurred);
 
-    m_modbusClient = new QModbusTcpClient(this);
-    m_modbusClient->setConnectionParameter(QModbusDevice::NetworkAddressParameter, ip);
-    m_modbusClient->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
-    m_modbusClient->setTimeout(2000);
-    m_modbusClient->setNumberOfRetries(3);
+    // 创建慢速客户端
+    if (m_slowClient) {
+        m_slowClient->disconnectDevice();
+        m_slowClient->deleteLater();
+    }
+    m_slowClient = new QModbusTcpClient(this);
+    m_slowClient->setConnectionParameter(QModbusDevice::NetworkAddressParameter, ip);
+    m_slowClient->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
+    m_slowClient->setTimeout(10000);   // 慢速客户端给予更长超时
+    m_slowClient->setNumberOfRetries(3);
+    connect(m_slowClient, &QModbusTcpClient::stateChanged, this, &Communication::onSlowStateChanged);
+    connect(m_slowClient, &QModbusTcpClient::errorOccurred, this, &Communication::onSlowErrorOccurred);
 
-    connect(m_modbusClient, &QModbusTcpClient::stateChanged, this, &Communication::onStateChanged);
-    connect(m_modbusClient, &QModbusTcpClient::errorOccurred, this, &Communication::onErrorOccurred);
+    // 发起连接（异步）
+    m_fastConnected = m_fastClient->connectDevice();
+    m_slowConnected = m_slowClient->connectDevice();
 
-    m_connected = m_modbusClient->connectDevice();
-    if (m_connected)
-        emit statusMessage("Modbus-TCP 连接成功");
+    if (m_fastConnected && m_slowConnected)
+        emit statusMessage("Modbus-TCP 双客户端连接成功");
     else
-        emit statusMessage("Modbus-TCP 连接失败");
+        emit statusMessage("Modbus-TCP 连接中...");
 }
 
 void Communication::disconnectDevice()
 {
-    if (m_modbusClient) {
-        m_modbusClient->disconnectDevice();
-        m_modbusClient->deleteLater();
-        m_modbusClient = nullptr;
+    if (m_fastClient) {
+        m_fastClient->disconnectDevice();
+        m_fastClient->deleteLater();
+        m_fastClient = nullptr;
     }
-    m_connected = false;
+    if (m_slowClient) {
+        m_slowClient->disconnectDevice();
+        m_slowClient->deleteLater();
+        m_slowClient = nullptr;
+    }
+    m_fastConnected = false;
+    m_slowConnected = false;
+    m_slowQueue.clear();
+    m_slowBusy = false;
     emit disconnected();
 }
 
 void Communication::startPolling()
 {
-    if (m_connected) {
+    if (m_fastConnected)
         m_fastTimer->start();
+    if (m_slowConnected)
         m_slowTimer->start();
-        emit statusMessage("开始轮询数据");
-    }
+    emit statusMessage("开始轮询数据");
 }
 
 void Communication::stopPolling()
@@ -82,15 +109,17 @@ void Communication::stopPolling()
 }
 
 //-------------------------------------------------------------
-// 快速轮询：TCD电压 A/B/A-B（50ms）
+// 快速轮询
 //-------------------------------------------------------------
 void Communication::pollFastData()
 {
-    if (!m_modbusClient || !m_connected) return;
-    if (m_modbusClient->state() != QModbusDevice::ConnectedState) return;
+    if (!m_fastClient || !m_fastConnected)
+        return;
+    if (m_fastClient->state() != QModbusDevice::ConnectedState)
+        return;
 
     QModbusDataUnit unit = fastReadRequest();
-    QModbusReply *reply = m_modbusClient->sendReadRequest(unit, 1);
+    QModbusReply *reply = m_fastClient->sendReadRequest(unit, 1);
     if (!reply) {
         emit statusMessage("快速读取请求发送失败");
         return;
@@ -100,7 +129,7 @@ void Communication::pollFastData()
         reply->deleteLater();
         if (reply->error() == QModbusDevice::NoError) {
             processFastResponse(reply->result());
-            emit fastDataUpdated();        // 确保这一行存在
+            emit fastDataUpdated();
         } else {
             emit statusMessage(QString("快速读取错误: %1").arg(reply->errorString()));
         }
@@ -109,7 +138,6 @@ void Communication::pollFastData()
 
 QModbusDataUnit Communication::fastReadRequest() const
 {
-    // 读取 0x0004~0x0006
     QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, 4, 3);
     return unit;
 }
@@ -126,15 +154,17 @@ void Communication::processFastResponse(const QModbusDataUnit &unit)
 }
 
 //-------------------------------------------------------------
-// 慢速轮询：柱温箱温度、流量1/2、压力、TCD温度（1000ms）
+// 慢速轮询（合并读取 0x0000~0x0007）
 //-------------------------------------------------------------
 void Communication::pollSlowData()
 {
-    if (!m_modbusClient || !m_connected) return;
-    if (m_modbusClient->state() != QModbusDevice::ConnectedState) return;
+    if (!m_slowClient || !m_slowConnected)
+        return;
+    if (m_slowClient->state() != QModbusDevice::ConnectedState)
+        return;
 
     QModbusDataUnit unit = slowReadRequest();
-    QModbusReply *reply = m_modbusClient->sendReadRequest(unit, 1);
+    QModbusReply *reply = m_slowClient->sendReadRequest(unit, 1);
     if (!reply) {
         emit statusMessage("慢速读取请求发送失败");
         return;
@@ -153,114 +183,221 @@ void Communication::pollSlowData()
 
 QModbusDataUnit Communication::slowReadRequest() const
 {
-    // 读取 0x0000~0x0003 共4个寄存器
-    QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, 0, 4);
+    QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, 0, 8);
     return unit;
 }
 
 void Communication::processSlowResponse(const QModbusDataUnit &unit)
 {
-    if (unit.valueCount() < 4) return;
+    if (unit.valueCount() < 8)
+        return;
 
-    {
-        QMutexLocker locker(&m_mutex);
-        m_columnOven1Temp = unit.value(0);
-        m_flow1 = unit.value(1);
-        m_flow2 = unit.value(2);
-        m_pressure = static_cast<qint16>(unit.value(3));
-    }
-
-    // 继续读取 TCD 温度（地址7），完成后只发出一次 slowDataUpdated
-    requestRegisterRead(7, [this](quint16 val) {
-        {
-            QMutexLocker locker(&m_mutex);
-            m_tcdTemperature = static_cast<qint16>(val);
-        }
-        emit slowDataUpdated();
-    });
+    QMutexLocker locker(&m_mutex);
+    m_columnOven1Temp = unit.value(0);
+    m_flow1 = unit.value(1);
+    m_flow2 = unit.value(2);
+    m_pressure = static_cast<qint16>(unit.value(3));
+    m_tcdTemperature = static_cast<qint16>(unit.value(7));
 }
 
 //-------------------------------------------------------------
-// 写寄存器（保持不变）
+// 慢速请求队列（写入与按需读取）
 //-------------------------------------------------------------
-void Communication::writeRegister(quint16 address, quint16 value, const QString &description)
+void Communication::enqueueSlowRead(quint16 address, std::function<void(quint16)> callback)
 {
-    if (!m_modbusClient || !m_connected) {
-        emit statusMessage("未连接，无法写入");
+    if (!m_slowClient || !m_slowConnected) {
+        callback(0);
         return;
     }
 
-    QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, address, 1);
-    unit.setValue(0, value);
+    SlowRequest req;
+    req.type = SlowRequest::Read;
+    req.address = address;
+    req.readCallback = callback;
+    m_slowQueue.enqueue(req);
 
-    emit logPacket("发送", QString("%1 [寄存器 0x%2 = %3]")
-                               .arg(description)
-                               .arg(address, 4, 16, QChar('0'))
-                               .arg(value));
+    processSlowQueue();
+}
 
-    QModbusReply *reply = m_modbusClient->sendWriteRequest(unit, 1);
-    if (reply) {
-        connect(reply, &QModbusReply::finished, this, [this, reply, description]() {
+void Communication::enqueueSlowWrite(quint16 address, quint16 value, const QString &description)
+{
+    if (!m_slowClient || !m_slowConnected)
+        return;
+
+    SlowRequest req;
+    req.type = SlowRequest::Write;
+    req.address = address;
+    req.value = value;
+    req.description = description;
+    m_slowQueue.enqueue(req);
+
+    processSlowQueue();
+}
+
+void Communication::processSlowQueue()
+{
+    if (m_slowBusy || m_slowQueue.isEmpty())
+        return;
+
+    m_slowBusy = true;
+    SlowRequest req = m_slowQueue.dequeue();
+
+    if (req.type == SlowRequest::Read) {
+        QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, req.address, 1);
+        QModbusReply *reply = m_slowClient->sendReadRequest(unit, 1);
+        if (!reply) {
+            if (req.readCallback) req.readCallback(0);
+            m_slowBusy = false;
+            processSlowQueue();
+            return;
+        }
+
+        connect(reply, &QModbusReply::finished, this, [this, reply, callback = req.readCallback]() {
+            reply->deleteLater();
+            quint16 value = 0;
+            if (reply->error() == QModbusDevice::NoError) {
+                const QModbusDataUnit result = reply->result();
+                if (result.valueCount() > 0)
+                    value = result.value(0);
+            }
+            if (callback) callback(value);
+            m_slowBusy = false;
+            processSlowQueue();
+        });
+    } else { // Write
+        QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, req.address, 1);
+        unit.setValue(0, req.value);
+
+        emit logPacket("发送", QString("%1 [寄存器 0x%2 = %3]")
+                                   .arg(req.description)
+                                   .arg(req.address, 4, 16, QChar('0'))
+                                   .arg(req.value));
+
+        QModbusReply *reply = m_slowClient->sendWriteRequest(unit, 1);
+        if (!reply) {
+            emit logPacket("接收", QString("%1 写入失败: 发送请求失败").arg(req.description));
+            m_slowBusy = false;
+            processSlowQueue();
+            return;
+        }
+
+        connect(reply, &QModbusReply::finished, this, [this, reply, description = req.description]() {
             if (reply->error() == QModbusDevice::NoError) {
                 emit logPacket("接收", QString("%1 写入成功").arg(description));
             } else {
                 emit logPacket("接收", QString("%1 写入失败: %2").arg(description, reply->errorString()));
             }
             reply->deleteLater();
+            m_slowBusy = false;
+            processSlowQueue();
         });
-    } else {
-        emit statusMessage("写入请求发送失败");
     }
 }
 
+//-------------------------------------------------------------
+// 写寄存器入口（统一入队）
+//-------------------------------------------------------------
+void Communication::writeRegister(QModbusTcpClient *client, quint16 address, quint16 value, const QString &description)
+{
+    Q_UNUSED(client);
+    enqueueSlowWrite(address, value, description);
+}
+
+// 命令实现（全部使用慢速队列）
+void Communication::setTcdTemperature(quint16 value) { writeRegister(m_slowClient, 0x03E8, value, "设置TCD温度"); }
+void Communication::setLampPowerA(quint16 value) { writeRegister(m_slowClient, 0x03E9, value, "设置灯丝功率A"); }
+void Communication::setLampPowerB(quint16 value) { writeRegister(m_slowClient, 0x03EA, value, "设置灯丝功率B"); }
+void Communication::enableDetector(bool enable) { writeRegister(m_slowClient, 0x03EB, enable ? 1 : 0, enable ? "开启检测器加热与灯丝供电" : "关闭检测器加热与灯丝供电"); }
+void Communication::setChannelAVoltage(quint16 value) { writeRegister(m_slowClient, 0x03ED, value, "设置A通道电压"); }
+void Communication::setChannelBVoltage(quint16 value) { writeRegister(m_slowClient, 0x03EE, value, "设置B通道电压"); }
+void Communication::setChannelABVoltage(quint16 value) { writeRegister(m_slowClient, 0x03EF, value, "设置A-B通道电压"); }
+void Communication::setPrecision(quint16 value) { writeRegister(m_slowClient, 0x03F1, value, "设置最小精度"); }
+void Communication::setColumnOven1Temperature(quint16 value) { writeRegister(m_slowClient, 0x03FF, value, "设置柱温箱1温度"); }
+void Communication::setColumnOven2Temperature(quint16 value) { writeRegister(m_slowClient, 0x03FF, value, "设置柱温箱2温度"); }
+void Communication::setColumnOvenEnable(bool enable) { writeRegister(m_slowClient, 0x0400, enable ? 1 : 0, enable ? "开启柱温箱" : "关闭柱温箱"); }
+void Communication::setSixWayValve1(bool on) { writeRegister(m_slowClient, 0x0404, on ? 1 : 0, on ? "六通阀1开启" : "六通阀1关闭"); }
+void Communication::setSixWayValve2(bool on) { writeRegister(m_slowClient, 0x0404, on ? 2 : 0, on ? "六通阀2开启" : "六通阀2关闭"); }
+
+void Communication::setValveBit(int valveIndex, bool on)
+{
+    if (valveIndex < 0 || valveIndex > 10) return;
+    if (on) m_valveState |= (1 << valveIndex);
+    else m_valveState &= ~(1 << valveIndex);
+    writeRegister(m_slowClient, 0x0401, m_valveState, QString("设置电磁阀 NV%1 %2").arg(valveIndex+1).arg(on ? "开启" : "关闭"));
+}
+
+void Communication::setAllValvesOff()
+{
+    m_valveState = 0;
+    writeRegister(m_slowClient, 0x0401, m_valveState, "关闭所有电磁阀");
+}
+
+void Communication::setFlow1Setpoint(quint16 value) { writeRegister(m_slowClient, 0x0402, value, "设置流量控制器1电压"); }
+void Communication::setFlow2Setpoint(quint16 value) { writeRegister(m_slowClient, 0x0403, value, "设置流量控制器2电压"); }
+
+//-------------------------------------------------------------
+// 按需读取入口（统一入队）
+//-------------------------------------------------------------
 void Communication::requestRegisterRead(quint16 address, std::function<void(quint16)> callback)
 {
-    if (!m_modbusClient || !m_connected) {
-        callback(0);
-        return;
-    }
-
-    QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, address, 1);
-    QModbusReply *reply = m_modbusClient->sendReadRequest(unit, 1);
-    if (!reply) {
-        callback(0);
-        return;
-    }
-
-    connect(reply, &QModbusReply::finished, this, [this, reply, callback]() {
-        reply->deleteLater();
-        quint16 value = 0;
-        if (reply->error() == QModbusDevice::NoError) {
-            const QModbusDataUnit result = reply->result();
-            if (result.valueCount() > 0)
-                value = result.value(0);
-        }
-        callback(value);
-    });
+    enqueueSlowRead(address, callback);
 }
 
+//-------------------------------------------------------------
 // 状态处理
-void Communication::onStateChanged(QModbusDevice::State state)
+//-------------------------------------------------------------
+void Communication::onFastStateChanged(QModbusDevice::State state)
 {
     if (state == QModbusDevice::ConnectedState) {
-        m_connected = true;
-        emit connected();
-        emit statusMessage("Modbus-TCP 已连接");
+        m_fastConnected = true;
+        if (m_slowConnected) {
+            emit connected();
+            emit statusMessage("Modbus-TCP 快速通道已连接");
+        }
     } else if (state == QModbusDevice::UnconnectedState) {
-        m_connected = false;
-        emit disconnected();
-        emit statusMessage("Modbus-TCP 已断开");
+        m_fastConnected = false;
+        if (!m_slowConnected) {
+            emit disconnected();
+            emit statusMessage("Modbus-TCP 快速通道已断开");
+        }
     }
 }
 
-void Communication::onErrorOccurred(QModbusDevice::Error error)
+void Communication::onSlowStateChanged(QModbusDevice::State state)
 {
-    emit statusMessage(QString("Modbus 错误: %1").arg(error));
+    if (state == QModbusDevice::ConnectedState) {
+        m_slowConnected = true;
+        if (m_fastConnected) {
+            emit connected();
+            emit statusMessage("Modbus-TCP 慢速通道已连接");
+        }
+    } else if (state == QModbusDevice::UnconnectedState) {
+        m_slowConnected = false;
+        if (!m_fastConnected) {
+            emit disconnected();
+            emit statusMessage("Modbus-TCP 慢速通道已断开");
+        }
+    }
 }
 
-bool Communication::isConnected() const { return m_connected; }
+void Communication::onFastErrorOccurred(QModbusDevice::Error error)
+{
+    emit statusMessage(QString("快速客户端错误: %1").arg(error));
+}
 
-// 数据 getter
+void Communication::onSlowErrorOccurred(QModbusDevice::Error error)
+{
+    emit statusMessage(QString("慢速客户端错误: %1").arg(error));
+}
+
+bool Communication::isConnected() const
+{
+    return m_fastConnected && m_slowConnected;
+}
+
+//-------------------------------------------------------------
+// 数据 getter（线程安全）
+//-------------------------------------------------------------
 double Communication::columnOven1Temp() const { QMutexLocker locker(&m_mutex); return m_columnOven1Temp; }
 double Communication::flow1() const { QMutexLocker locker(&m_mutex); return m_flow1; }
 double Communication::flow2() const { QMutexLocker locker(&m_mutex); return m_flow2; }
@@ -269,32 +406,3 @@ double Communication::tcdVoltageA() const { QMutexLocker locker(&m_mutex); retur
 double Communication::tcdVoltageB() const { QMutexLocker locker(&m_mutex); return m_tcdVoltageB; }
 double Communication::tcdVoltageAB() const { QMutexLocker locker(&m_mutex); return m_tcdVoltageAB; }
 double Communication::tcdTemperature() const { QMutexLocker locker(&m_mutex); return m_tcdTemperature; }
-
-// 命令实现（保持原有）
-void Communication::setTcdTemperature(quint16 value) { writeRegister(0x03E8, value, "设置TCD温度"); }
-void Communication::setLampPowerA(quint16 value) { writeRegister(0x03E9, value, "设置灯丝功率A"); }
-void Communication::setLampPowerB(quint16 value) { writeRegister(0x03EA, value, "设置灯丝功率B"); }
-void Communication::enableDetector(bool enable) { writeRegister(0x03EB, enable ? 1 : 0, enable ? "开启检测器加热与灯丝供电" : "关闭检测器加热与灯丝供电"); }
-void Communication::setChannelAVoltage(quint16 value) { writeRegister(0x03ED, value, "设置A通道电压"); }
-void Communication::setChannelBVoltage(quint16 value) { writeRegister(0x03EE, value, "设置B通道电压"); }
-void Communication::setChannelABVoltage(quint16 value) { writeRegister(0x03EF, value, "设置A-B通道电压"); }
-void Communication::setPrecision(quint16 value) { writeRegister(0x03F1, value, "设置最小精度"); }
-void Communication::setColumnOven1Temperature(quint16 value) { writeRegister(0x03FF, value, "设置柱温箱1温度"); }
-void Communication::setColumnOven2Temperature(quint16 value) { writeRegister(0x03FF, value, "设置柱温箱2温度"); }
-void Communication::setColumnOvenEnable(bool enable) { writeRegister(0x0400, enable ? 1 : 0, enable ? "开启柱温箱" : "关闭柱温箱"); }
-void Communication::setSixWayValve1(bool on) { writeRegister(0x0404, on ? 1 : 0, on ? "六通阀1开启" : "六通阀1关闭"); }
-void Communication::setSixWayValve2(bool on) { writeRegister(0x0404, on ? 1 : 0, on ? "六通阀2开启" : "六通阀2关闭"); }
-void Communication::setValveBit(int valveIndex, bool on)
-{
-    if (valveIndex < 0 || valveIndex > 10) return;
-    if (on) m_valveState |= (1 << valveIndex);
-    else m_valveState &= ~(1 << valveIndex);
-    writeRegister(0x0401, m_valveState, QString("设置电磁阀 NV%1 %2").arg(valveIndex+1).arg(on ? "开启" : "关闭"));
-}
-void Communication::setAllValvesOff()
-{
-    m_valveState = 0;
-    writeRegister(0x0401, m_valveState, "关闭所有电磁阀");
-}
-void Communication::setFlow1Setpoint(quint16 value) { writeRegister(0x0402, value, "设置流量控制器1电压"); }
-void Communication::setFlow2Setpoint(quint16 value) { writeRegister(0x0403, value, "设置流量控制器2电压"); }

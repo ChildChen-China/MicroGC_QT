@@ -92,7 +92,7 @@ private:
     bool m_valveCloseDone = false;
     bool m_recordStarted = false;
     bool m_stopSaveSent = false;
-
+    bool m_verifyReadPending = false;
     QList<CommandToVerify> m_verifyQueue;
 };
 

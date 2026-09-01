@@ -148,8 +148,8 @@ SixWayValveItem::SixWayValveItem(const QString &name, const QPointF &center, QGr
 
     m_label = new QGraphicsTextItem(m_name, this);
     m_label->setDefaultTextColor(Qt::black);
-    m_label->setFont(QFont("Arial", 12, QFont::Bold));
-    m_label->setPos(-30, 75);
+    m_label->setFont(QFont("Arial", 22, QFont::Bold));
+    m_label->setPos(-180, 0);
 }
 
 QRectF SixWayValveItem::boundingRect() const
@@ -572,12 +572,6 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     fineLabel->setDefaultTextColor(Qt::black);
     fineLabel->setPos(917, 456);
     scene->addItem(fineLabel);
-
-    auto *sixLabel = new QGraphicsTextItem("六通阀");
-    sixLabel->setFont(QFont("Arial", 23, QFont::Bold));
-    sixLabel->setDefaultTextColor(Qt::black);
-    sixLabel->setPos(1050, 1012);
-    scene->addItem(sixLabel);
 
     auto *ovenBigLabel = new QGraphicsTextItem("柱温箱");
     ovenBigLabel->setFont(QFont("Arial", 26, QFont::Bold));

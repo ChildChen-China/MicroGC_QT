@@ -39,7 +39,9 @@ OtherTab::OtherTab(QWidget *parent)
     , m_groupFlow1(nullptr)
     , m_groupFlow2(nullptr)
     , m_comm(nullptr)
-    , m_autoScrollEnabled(true)
+    , m_autoScrollEnabled(true),
+    m_scrollTimer(new QTimer(this)),
+    m_startTime(QDateTime::currentMSecsSinceEpoch())
 {
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->addLayout(setupFirstRow());
@@ -63,6 +65,27 @@ OtherTab::OtherTab(QWidget *parent)
             plot->installEventFilter(this);
         }
     }
+    // 创建滚动定时器，100ms触发一次
+    m_scrollTimer->setInterval(100);
+    connect(m_scrollTimer, &QTimer::timeout, this, &OtherTab::scrollPlots);
+    m_scrollTimer->start();
+}
+
+void OtherTab::scrollPlots()
+{
+    // 未连接或不允许自动滚动时，不更新X轴
+    if (!m_comm || !m_comm->isConnected() || !m_autoScrollEnabled)
+        return;
+
+    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
+
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+                                  m_plotFlow1, m_plotFlow2}) {
+        if (plot && plot->isVisible()) {
+            plot->xAxis->setRange(timeSec - 20, timeSec);
+            plot->replot(QCustomPlot::rpQueuedReplot);
+        }
+    }
 }
 
 void OtherTab::setCommunication(Communication *comm)
@@ -70,6 +93,10 @@ void OtherTab::setCommunication(Communication *comm)
     m_comm = comm;
     if (m_comm) {
         connect(m_comm, &Communication::slowDataUpdated, this, &OtherTab::updateFromComm);
+        // 连接成功时重置起始时间，避免显示未连接期间的空白
+        connect(m_comm, &Communication::connected, this, [this]() {
+            m_startTime = QDateTime::currentMSecsSinceEpoch();
+        });
     }
 }
 
@@ -217,65 +244,50 @@ QHBoxLayout* OtherTab::setupThirdRow()
 
 void OtherTab::updateFromComm()
 {
-    if (!m_comm || !m_comm->isConnected() || (QApplication::mouseButtons() & Qt::LeftButton))
+    if (!m_comm || !m_comm->isConnected())
         return;
 
-    // 使用静态变量记录起始时间，生成相对秒数
-    static qint64 startTime = QDateTime::currentMSecsSinceEpoch();
-    double timeSec = (QDateTime::currentMSecsSinceEpoch() - startTime) / 1000.0;
+    if (QApplication::mouseButtons() & Qt::LeftButton)
+        return; // 用户交互时不更新数据（可选，根据需要调整）
+
+    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
 
     // 柱温箱温度
-    double ovenTemp = m_comm->columnOven1Temp();
     if (m_plotColumnOven && m_plotColumnOven->graphCount() > 0) {
-        m_plotColumnOven->graph(0)->addData(timeSec, ovenTemp);
-        if (m_autoScrollEnabled) {
-            m_plotColumnOven->xAxis->setRange(timeSec - 20, timeSec);
-            m_plotColumnOven->yAxis->rescale(true);
-        }
-        m_plotColumnOven->replot();
+        m_plotColumnOven->graph(0)->addData(timeSec, m_comm->columnOven1Temp());
+        if (m_autoScrollEnabled) m_plotColumnOven->yAxis->rescale(true);
     }
 
     // 压力传感器
-    double pressure = m_comm->pressure();
     if (m_plotPressure && m_plotPressure->graphCount() > 0) {
-        m_plotPressure->graph(0)->addData(timeSec, pressure);
-        if (m_autoScrollEnabled) {
-            m_plotPressure->xAxis->setRange(timeSec - 20, timeSec);
-            m_plotPressure->yAxis->rescale(true);
-        }
-        m_plotPressure->replot();
+        m_plotPressure->graph(0)->addData(timeSec, m_comm->pressure());
+        if (m_autoScrollEnabled) m_plotPressure->yAxis->rescale(true);
     }
 
-    // 真空规（协议未提供，暂时使用0）
+    // 真空规
     if (m_plotVacuum && m_plotVacuum->graphCount() > 0) {
         m_plotVacuum->graph(0)->addData(timeSec, 0.0);
-        if (m_autoScrollEnabled) {
-            m_plotVacuum->xAxis->setRange(timeSec - 20, timeSec);
-            m_plotVacuum->yAxis->rescale(true);
-        }
-        m_plotVacuum->replot();
+        if (m_autoScrollEnabled) m_plotVacuum->yAxis->rescale(true);
     }
 
-    // 流量控制器1
-    double flow1 = m_comm->flow1();
+    // 流量器1
     if (m_plotFlow1 && m_plotFlow1->graphCount() > 0) {
-        m_plotFlow1->graph(0)->addData(timeSec, flow1);
-        if (m_autoScrollEnabled) {
-            m_plotFlow1->xAxis->setRange(timeSec - 20, timeSec);
-            m_plotFlow1->yAxis->rescale(true);
-        }
-        m_plotFlow1->replot();
+        m_plotFlow1->graph(0)->addData(timeSec, m_comm->flow1());
+        if (m_autoScrollEnabled) m_plotFlow1->yAxis->rescale(true);
     }
 
-    // 流量控制器2
-    double flow2 = m_comm->flow2();
+    // 流量器2
     if (m_plotFlow2 && m_plotFlow2->graphCount() > 0) {
-        m_plotFlow2->graph(0)->addData(timeSec, flow2);
-        if (m_autoScrollEnabled) {
-            m_plotFlow2->xAxis->setRange(timeSec - 20, timeSec);
-            m_plotFlow2->yAxis->rescale(true);
+        m_plotFlow2->graph(0)->addData(timeSec, m_comm->flow2());
+        if (m_autoScrollEnabled) m_plotFlow2->yAxis->rescale(true);
+    }
+
+    // 统一重绘（延迟重绘，减少负担）
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+                                  m_plotFlow1, m_plotFlow2}) {
+        if (plot && plot->isVisible()) {
+            plot->replot(QCustomPlot::rpQueuedReplot);
         }
-        m_plotFlow2->replot();
     }
 }
 
@@ -326,10 +338,3 @@ void OtherTab::toggleSensorVisible()
     m_groupFlow1->setVisible(m_chkFlow1->isChecked());
     m_groupFlow2->setVisible(m_chkFlow2->isChecked());
 }
-
-// 长度设置接口（暂未使用）
-void OtherTab::setColumnOvenLength(int points) { m_columnOvenLength = points; }
-void OtherTab::setPressureLength(int points) { m_pressureLength = points; }
-void OtherTab::setVacuumLength(int points) { m_vacuumLength = points; }
-void OtherTab::setFlow1Length(int points) { m_flow1Length = points; }
-void OtherTab::setFlow2Length(int points) { m_flow2Length = points; }

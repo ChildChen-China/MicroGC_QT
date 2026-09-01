@@ -37,6 +37,7 @@ private slots:
     void setCrosshairEnabled(bool enabled);
     void toggleSensorVisible();
     void updateFromComm();
+    void scrollPlots();          // 平滑滚动槽函数
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -71,13 +72,8 @@ private:
     Communication *m_comm;
 
     bool m_autoScrollEnabled;
-
-    // 显示长度（暂未使用）
-    int m_columnOvenLength = 1000;
-    int m_pressureLength = 1000;
-    int m_vacuumLength = 1000;
-    int m_flow1Length = 1000;
-    int m_flow2Length = 1000;
+    QTimer *m_scrollTimer;          // 平滑滚动定时器
+    qint64 m_startTime;             // 起始时间（毫秒）
 };
 
 #endif // OTHERTAB_H

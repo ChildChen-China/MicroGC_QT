@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QMutex>
+#include <QQueue>
 #include <QModbusTcpClient>
 #include <QModbusDataUnit>
 #include <functional>
@@ -21,7 +22,7 @@ public:
     void startPolling();
     void stopPolling();
 
-    // 数据 getter
+    // 数据 getter（线程安全）
     double columnOven1Temp() const;
     double flow1() const;
     double flow2() const;
@@ -31,7 +32,7 @@ public:
     double tcdVoltageAB() const;
     double tcdTemperature() const;
 
-    // 命令写入
+    // 命令写入（使用慢速队列）
     void setTcdTemperature(quint16 value);
     void setLampPowerA(quint16 value);
     void setLampPowerB(quint16 value);
@@ -50,6 +51,7 @@ public:
     void setFlow1Setpoint(quint16 value);
     void setFlow2Setpoint(quint16 value);
 
+    // 按需读取（使用慢速队列）
     void requestRegisterRead(quint16 address, std::function<void(quint16)> callback);
 
     bool isConnected() const;
@@ -57,30 +59,56 @@ public:
 signals:
     void connected();
     void disconnected();
-    void fastDataUpdated();      // 快速数据更新（TCD电压）
-    void slowDataUpdated();      // 慢速数据更新（温度、流量、压力）
+    void fastDataUpdated();
+    void slowDataUpdated();
     void statusMessage(const QString &message);
     void logPacket(const QString &direction, const QString &dataHex);
 
 private slots:
-    void onStateChanged(QModbusDevice::State state);
-    void onErrorOccurred(QModbusDevice::Error error);
+    void onFastStateChanged(QModbusDevice::State state);
+    void onSlowStateChanged(QModbusDevice::State state);
+    void onFastErrorOccurred(QModbusDevice::Error error);
+    void onSlowErrorOccurred(QModbusDevice::Error error);
     void pollFastData();
     void pollSlowData();
 
 private:
-    void writeRegister(quint16 address, quint16 value, const QString &description);
+    // 慢速请求类型定义
+    struct SlowRequest {
+        enum Type { Read, Write };
+        Type type;
+        quint16 address;
+        quint16 value;
+        QString description;
+        std::function<void(quint16)> readCallback;  // 仅读取时有效
+    };
+
+    void writeRegister(QModbusTcpClient *client, quint16 address, quint16 value, const QString &description);
+    void enqueueSlowRead(quint16 address, std::function<void(quint16)> callback);
+    void enqueueSlowWrite(quint16 address, quint16 value, const QString &description);
+    void processSlowQueue();
+
     QModbusDataUnit fastReadRequest() const;
     QModbusDataUnit slowReadRequest() const;
     void processFastResponse(const QModbusDataUnit &unit);
     void processSlowResponse(const QModbusDataUnit &unit);
 
-    QModbusTcpClient *m_modbusClient;
+    // 双客户端
+    QModbusTcpClient *m_fastClient;   // 快速轮询（TCD电压）
+    QModbusTcpClient *m_slowClient;   // 慢速轮询、写入、按需读取
+
     QTimer *m_fastTimer;
     QTimer *m_slowTimer;
-    bool m_connected;
+
+    bool m_fastConnected;
+    bool m_slowConnected;
     mutable QMutex m_mutex;
 
+    // 慢速请求队列
+    QQueue<SlowRequest> m_slowQueue;
+    bool m_slowBusy;
+
+    // 数据缓存
     double m_columnOven1Temp;
     double m_flow1;
     double m_flow2;

@@ -724,7 +724,6 @@ void MonitorTab::onDataUpdated()
     m_filtB = smooth(m_rawB);
     m_filtAB = smooth(m_rawAB);
 
-    // ===== 调试输出：打印最新数据点，用于和文件内容对比 =====
     int idx = m_time.size() - 1;
 
     // 更新界面显示（使用原始或滤波数据）

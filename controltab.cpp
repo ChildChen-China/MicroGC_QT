@@ -58,7 +58,7 @@ RealtimeDetailDialog::RealtimeDetailDialog(const QString &title, QWidget *parent
     m_plot->installEventFilter(this);
     mainLayout->addWidget(m_plot, 1);
 
-    // 按钮行：清除和还原
+    // 按钮行
     auto *btnLayout = new QHBoxLayout;
     m_clearBtn = new QPushButton("清除", this);
     m_restoreBtn = new QPushButton("还原", this);
@@ -77,15 +77,24 @@ RealtimeDetailDialog::RealtimeDetailDialog(const QString &title, QWidget *parent
     lengthLayout->addStretch();
     mainLayout->addLayout(lengthLayout);
 
-    // 更新定时器（100ms从通信对象读取数据）
+    // 从 QSettings 读取保存的长度
+    QSettings settings("MyCompany", "MicroGC");
+    int savedLength = settings.value("realtime_length/" + title, 1000).toInt();
+    m_lengthSpin->setValue(savedLength);
+
+    // 更新定时器
     m_updateTimer = new QTimer(this);
     connect(m_updateTimer, &QTimer::timeout, this, &RealtimeDetailDialog::updateFromComm);
     m_updateTimer->start(100);
 
     connect(m_clearBtn, &QPushButton::clicked, this, &RealtimeDetailDialog::clear);
     connect(m_restoreBtn, &QPushButton::clicked, this, &RealtimeDetailDialog::restoreView);
-    connect(m_setLengthBtn, &QPushButton::clicked, this, [this]() {
-        emit lengthSet(m_lengthSpin->value());
+    connect(m_setLengthBtn, &QPushButton::clicked, this, [this, title]() {
+        int len = m_lengthSpin->value();
+        QSettings settings("MyCompany", "MicroGC");
+        settings.setValue("realtime_length/" + title, len);
+        settings.sync();
+        emit lengthSet(len);
     });
 
     // 确保开始时不显示旧数据

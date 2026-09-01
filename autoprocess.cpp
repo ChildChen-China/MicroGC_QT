@@ -10,7 +10,7 @@ AutoProcessManager::AutoProcessManager(Communication *comm, QObject *parent)
     , m_processTimer(new QTimer(this))
     , m_stopSaveSent(false)
 {
-    m_processTimer->setInterval(1000);   // 1秒
+    m_processTimer->setInterval(3000);   // 3秒
     connect(m_processTimer, &QTimer::timeout, this, &AutoProcessManager::onProcessTimer);
 
     // 改为连接慢速数据更新，因为自动流程关注的是温度/流量
@@ -293,13 +293,20 @@ void AutoProcessManager::enqueueVerify(const QString &name, quint16 address, qui
 
 void AutoProcessManager::processVerifyQueue()
 {
-    if (m_verifyQueue.isEmpty())
+    // 如果队列为空或已有读取请求在途，则本次不处理
+    if (m_verifyQueue.isEmpty() || m_verifyReadPending)
         return;
 
     CommandToVerify cmd = m_verifyQueue.first();
     QString name = cmd.name;
 
+    // 标记读取进行中，防止并发
+    m_verifyReadPending = true;
+
     m_comm->requestRegisterRead(cmd.address, [this, name](quint16 actual) {
+        // 读取完成，清除标记
+        m_verifyReadPending = false;
+
         int idx = -1;
         for (int i = 0; i < m_verifyQueue.size(); ++i) {
             if (m_verifyQueue[i].name == name) {
