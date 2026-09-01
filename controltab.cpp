@@ -351,8 +351,8 @@ void ControlTab::setCommunication(Communication *comm)
 {
     m_comm = comm;
     if (m_comm) {
-        connect(m_comm, &Communication::dataUpdated, this, &ControlTab::updateRealtimeLabels);
-        updateRealtimeLabels();  // 初始更新
+        connect(m_comm, &Communication::slowDataUpdated, this, &ControlTab::updateRealtimeLabels);
+        updateRealtimeLabels(); // 立即更新一次
     }
 }
 

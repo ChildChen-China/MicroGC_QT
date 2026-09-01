@@ -493,7 +493,7 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addItem(tempLabel);
 
     // ========== 五、六通阀 ==========
-    SixWayValveItem *valve1 = new SixWayValveItem("", QPointF(1234, 1004));
+    SixWayValveItem *valve1 = new SixWayValveItem("六通阀", QPointF(1234, 1004));
     scene->addItem(valve1);
 
     scene->addLine(1275, 902, 1374, 902, blackPen);

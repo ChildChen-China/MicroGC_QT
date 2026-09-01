@@ -193,7 +193,7 @@ void IntegrationWorker::integrateChannel(const QVector<double> &x, const QVector
     if (n < 3) return;
 
     int i = 1;
-    int peakCount = 0;   // 每个通道内独立计数
+    int peakCount = 0;
     while (i < n - 1) {
         double dx = x[i] - x[i-1];
         if (qFuzzyIsNull(dx)) { i++; continue; }
@@ -209,7 +209,6 @@ void IntegrationWorker::integrateChannel(const QVector<double> &x, const QVector
                 if (s <= m_slopeThreshold) break;
                 startIdx--;
             }
-            double startX = x[startIdx] - m_advance;
 
             // 寻找顶点
             int peakIdx = startIdx;
@@ -232,12 +231,23 @@ void IntegrationWorker::integrateChannel(const QVector<double> &x, const QVector
                 if (s >= -m_slopeThreshold) break;
                 endIdx++;
             }
+
+            // ========== 波宽过滤（新添加） ==========
+            double rawPeakWidth = x[endIdx] - x[startIdx];   // 原始峰宽，不含提前/延后
+            if (rawPeakWidth < m_waveWidth) {
+                i = endIdx + 1;
+                continue;   // 跳过窄峰
+            }
+            // =======================================
+
+            // 应用提前和延后量
+            double startX = x[startIdx] - m_advance;
             double endX = x[endIdx] + m_delay;
 
             // 计算面积（带基线扣除）
             double area = calculateArea(x, y, startIdx, endIdx, type);
 
-            // 生成结果行，组份带通道名
+            // 生成结果行
             QStringList row;
             row << "自动积分"
                 << QString("%1 峰%2").arg(channelName).arg(++peakCount)

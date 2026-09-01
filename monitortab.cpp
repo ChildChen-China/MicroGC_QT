@@ -97,7 +97,14 @@ SignalPlotPanel::SignalPlotPanel(const QString &title, QWidget *parent)
         m_inverted = false;
         m_invertBtn->setChecked(false);
         m_invertBtn->setText("反转");
-        m_plot->resetView(0, 5, 0, 5);
+
+        if (!m_x.isEmpty()) {
+            double lastX = m_x.last();
+            double firstX = qMax(0.0, lastX - 20.0);
+            m_plot->xAxis->setRange(firstX, lastX);
+            // m_plot->yAxis->rescale(true);
+        }
+        m_plot->replot();
     });
 
     connect(m_crosshairBtn, &QPushButton::toggled, this, [this](bool checked) {
@@ -123,9 +130,21 @@ bool SignalPlotPanel::isPaused() const { return m_pauseBtn->isChecked(); }
 
 void SignalPlotPanel::setData(const QVector<double> &x, const QVector<double> &y)
 {
+    if (x.isEmpty() || y.isEmpty()) return;
+
     m_x = x;
     m_y = y;
     applyInversion();
+
+    if (!m_rangeInitialized) {
+        // 首次显示：设置 X 轴为最近20秒，Y 轴自适应数据
+        double lastX = x.last();
+        double firstX = qMax(0.0, lastX - 20.0);
+        m_plot->xAxis->setRange(firstX, lastX);
+        m_plot->yAxis->rescale(true);
+        m_rangeInitialized = true;
+    }
+
     m_plot->replot();
 }
 
@@ -183,7 +202,7 @@ void SaveWorker::startSaving(const QString &fileName, int durationMinutes)
     if (m_file.isOpen()) stopSaving();
     m_file.setFileName(fileName);
     if (!m_file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-        qWarning() << "无法打开文件:" << fileName;
+        qWarning() << "SaveWorker: 无法打开文件:" << fileName;
         return;
     }
     m_stream.setDevice(&m_file);
@@ -204,6 +223,55 @@ void SaveWorker::appendData(const QString &dataLine)
 {
     if (m_file.isOpen()) {
         m_stream << dataLine << "\n";
+
+    } else {
+    }
+}
+
+int MonitorTab::getParameter(const QString &key) const
+{
+    if (key == "temperature")     return m_tempEdit->value();
+    if (key == "powerA")          return m_powerAEdit->value();
+    if (key == "powerB")          return m_powerBEdit->value();
+    if (key == "levelA")          return m_levelAEdit->value();
+    if (key == "levelB")          return m_levelBEdit->value();
+    if (key == "levelAB")         return m_levelABEdit->value();
+    if (key == "precision")       return m_precisionEdit->currentData().toInt();
+    if (key == "collectPoints")   return m_collectPoints;
+    if (key == "averagePoints")   return m_averagePoints;
+    return 0;
+}
+
+void MonitorTab::setParameter(const QString &key, int value)
+{
+    if (key == "temperature") {
+        m_tempEdit->setValue(value);
+    } else if (key == "powerA") {
+        m_powerAEdit->setValue(value);
+    } else if (key == "powerB") {
+        m_powerBEdit->setValue(value);
+    } else if (key == "levelA") {
+        m_levelAEdit->setValue(value);
+    } else if (key == "levelB") {
+        m_levelBEdit->setValue(value);
+    } else if (key == "levelAB") {
+        m_levelABEdit->setValue(value);
+    } else if (key == "precision") {
+        int idx = m_precisionEdit->findData(value);
+        if (idx >= 0) m_precisionEdit->setCurrentIndex(idx);
+    } else if (key == "collectPoints") {
+        m_collectPoints = value;
+        updateDisplayLength();
+    } else if (key == "averagePoints") {
+        m_averagePoints = value;
+        if (m_filterWorker) {
+            QMetaObject::invokeMethod(m_filterWorker, "processFilter", Qt::QueuedConnection,
+                                      Q_ARG(QVector<double>, m_time),
+                                      Q_ARG(QVector<double>, m_rawA),
+                                      Q_ARG(QVector<double>, m_rawB),
+                                      Q_ARG(QVector<double>, m_rawAB),
+                                      Q_ARG(int, m_averagePoints));
+        }
     }
 }
 
@@ -262,10 +330,10 @@ MonitorTab::MonitorTab(QWidget *parent)
     m_hasPendingLevelA(false),
     m_hasPendingLevelB(false),
     m_hasPendingLevelAB(false),
-    m_lastSavedIndex(0)
+    m_lastSavedIndex(0),
+    m_plotTimer(new QTimer(this))
 {
-    initSaveThread();
-    initFilterThread();
+
 
     auto *mainLayout = new QHBoxLayout(this);
 
@@ -279,10 +347,31 @@ MonitorTab::MonitorTab(QWidget *parent)
     auto *rightLayout = new QVBoxLayout(rightGroup);
     setupSignalPanel(rightLayout);
     mainLayout->addWidget(rightGroup, 3);
+    m_startTime = QDateTime::currentMSecsSinceEpoch();
 
-    m_feedbackTimer->setInterval(1000);
+
+    m_feedbackTimer->setInterval(2000);
     connect(m_feedbackTimer, &QTimer::timeout, this, &MonitorTab::checkSettingFeedback);
     m_feedbackTimer->start();
+
+    // 绘图刷新定时器：每200ms直接更新曲线（使用原始或已有滤波数据）
+    m_plotTimer->setInterval(50);
+    connect(m_plotTimer, &QTimer::timeout, this, [this]() { updatePlots(false); });
+    m_plotTimer->start();
+
+    QTimer *filterTimer = new QTimer(this);
+    filterTimer->setInterval(50);
+    connect(filterTimer, &QTimer::timeout, this, [this]() {
+        if (m_filterWorker) {
+            QMetaObject::invokeMethod(m_filterWorker, "processFilter", Qt::QueuedConnection,
+                                      Q_ARG(QVector<double>, m_time),
+                                      Q_ARG(QVector<double>, m_rawA),
+                                      Q_ARG(QVector<double>, m_rawB),
+                                      Q_ARG(QVector<double>, m_rawAB),
+                                      Q_ARG(int, m_averagePoints));
+        }
+    });
+    filterTimer->start();
 }
 
 MonitorTab::~MonitorTab()
@@ -297,33 +386,81 @@ MonitorTab::~MonitorTab()
     }
 }
 
+
 void MonitorTab::setCommunication(Communication *comm)
 {
     m_comm = comm;
     if (m_comm) {
-        connect(m_comm, &Communication::dataUpdated, this, &MonitorTab::onDataUpdated);
+        connect(m_comm, &Communication::fastDataUpdated, this, &MonitorTab::onDataUpdated);
     }
 }
 
-void MonitorTab::initSaveThread()
+void MonitorTab::onFastDataUpdated()
 {
-    m_saveThread = new QThread(this);
-    m_saveWorker = new SaveWorker();
-    m_saveWorker->moveToThread(m_saveThread);
-    connect(m_saveThread, &QThread::finished, m_saveWorker, &QObject::deleteLater);
-    m_saveThread->start();
+    if (!m_comm) return;
+
+    double rawA = m_comm->tcdVoltageA();
+    double rawB = m_comm->tcdVoltageB();
+    double rawAB = m_comm->tcdVoltageAB();
+
+    m_rawA.append(rawA);
+    m_rawB.append(rawB);
+    m_rawAB.append(rawAB);
+    m_time.append(QDateTime::currentMSecsSinceEpoch() / 1000.0);
+
+    // 限制数据长度
+    while (m_time.size() > m_collectPoints) {
+        m_time.removeFirst();
+        m_rawA.removeFirst();
+        m_rawB.removeFirst();
+        m_rawAB.removeFirst();
+        if (!m_filtA.isEmpty()) m_filtA.removeFirst();
+        if (!m_filtB.isEmpty()) m_filtB.removeFirst();
+        if (!m_filtAB.isEmpty()) m_filtAB.removeFirst();
+    }
+
+    // 文件写入（仅在保存状态时）
+    if (m_isSaving && m_saveWorker && !m_time.isEmpty()) {
+        int i = m_time.size() - 1; // 只写最新数据点
+
+        // 辅助函数：若滤波数据长度不足，则根据原始数据实时计算该点的滤波值
+        auto calcFilterValue = [this](const QVector<double>& raw, int index) -> double {
+            if (index < 0 || index >= raw.size()) return 0.0;
+            int window = qMax(1, m_averagePoints);
+            int start = qMax(0, index - window/2);
+            int end = qMin(raw.size()-1, index + window/2);
+            double sum = 0.0;
+            for (int j = start; j <= end; ++j) sum += raw[j];
+            return sum / (end - start + 1);
+        };
+
+        // 优先使用线程计算好的滤波数据，若长度不足则临时计算
+        double filtA = (i < m_filtA.size()) ? m_filtA.at(i) : calcFilterValue(m_rawA, i);
+        double filtB = (i < m_filtB.size()) ? m_filtB.at(i) : calcFilterValue(m_rawB, i);
+        double filtAB = (i < m_filtAB.size()) ? m_filtAB.at(i) : calcFilterValue(m_rawAB, i);
+
+        QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
+                               .arg(m_time.at(i), 0, 'f', 3)
+                               .arg(m_rawA.at(i), 0, 'f', 4)
+                               .arg(filtA, 0, 'f', 4)
+                               .arg(m_rawB.at(i), 0, 'f', 4)
+                               .arg(filtB, 0, 'f', 4)
+                               .arg(m_rawAB.at(i), 0, 'f', 4)
+                               .arg(filtAB, 0, 'f', 4);
+
+        QMetaObject::invokeMethod(m_saveWorker, "appendData", Qt::QueuedConnection,
+                                  Q_ARG(QString, dataLine));
+    }
+}
+void MonitorTab::onSlowDataUpdated()
+{
+    if (!m_comm) return;
+    double temp = m_comm->tcdTemperature();
+    if (m_tempValueLabel) m_tempValueLabel->setText(QString("%1 ℃").arg(temp, 0, 'f', 2));
+    // 其他慢速参数通过ControlTab和OtherTab的updateRealtimeLabels更新，或在此更新相关标签
 }
 
-void MonitorTab::initFilterThread()
-{
-    m_filterThread = new QThread(this);
-    m_filterWorker = new FilterWorker();
-    m_filterWorker->moveToThread(m_filterThread);
-    connect(m_filterThread, &QThread::finished, m_filterWorker, &QObject::deleteLater);
-    connect(m_filterWorker, &FilterWorker::filterCompleted,
-            this, &MonitorTab::onFilterCompleted, Qt::QueuedConnection);
-    m_filterThread->start();
-}
+
 
 void MonitorTab::setupControlPanel(QVBoxLayout *layout)
 {
@@ -510,6 +647,7 @@ void MonitorTab::setupSignalPanel(QVBoxLayout *layout)
     connect(m_filterBtnB, &QPushButton::clicked, this, &MonitorTab::toggleFilterB);
     connect(m_filterBtnAB, &QPushButton::clicked, this, &MonitorTab::toggleFilterAB);
 
+    // 暂停时保存快照
     connect(m_panelA, &SignalPlotPanel::pauseStateChanged, this, [this](bool paused) {
         if (paused) {
             int len = qMin(m_time.size(), qMin(m_rawA.size(), m_filtA.size()));
@@ -540,51 +678,70 @@ void MonitorTab::setupSignalPanel(QVBoxLayout *layout)
     layout->addWidget(m_panelAB, 1);
 }
 
-// 数据更新入口（由 Communication 触发）
 void MonitorTab::onDataUpdated()
 {
     if (!m_comm) return;
 
-    // 使用静态变量记录起始时间，生成相对秒数
-    static qint64 startTime = QDateTime::currentMSecsSinceEpoch();
-    double timeSec = (QDateTime::currentMSecsSinceEpoch() - startTime) / 1000.0;
+    // 使用成员变量 m_startTime 计算相对时间（秒）
+    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
 
     double rawA = m_comm->tcdVoltageA();
     double rawB = m_comm->tcdVoltageB();
     double rawAB = m_comm->tcdVoltageAB();
-    double temp = m_comm->tcdTemperature();
 
+    // 追加原始数据
     m_time.append(timeSec);
     m_rawA.append(rawA);
     m_rawB.append(rawB);
     m_rawAB.append(rawAB);
 
-    if (m_tempValueLabel) m_tempValueLabel->setText(QString("%1 ℃").arg(temp, 0, 'f', 2));
-
-    updateDisplayLength();
-
-    if (m_filterWorker) {
-        QMetaObject::invokeMethod(m_filterWorker, "processFilter", Qt::QueuedConnection,
-                                  Q_ARG(QVector<double>, m_time),
-                                  Q_ARG(QVector<double>, m_rawA),
-                                  Q_ARG(QVector<double>, m_rawB),
-                                  Q_ARG(QVector<double>, m_rawAB),
-                                  Q_ARG(int, m_averagePoints));
+    // 限制缓冲区长度
+    while (m_time.size() > m_collectPoints) {
+        m_time.removeFirst();
+        m_rawA.removeFirst();
+        m_rawB.removeFirst();
+        m_rawAB.removeFirst();
+        if (!m_filtA.isEmpty()) m_filtA.removeFirst();
+        if (!m_filtB.isEmpty()) m_filtB.removeFirst();
+        if (!m_filtAB.isEmpty()) m_filtAB.removeFirst();
     }
 
+    // ===== 因果滤波（只使用过去和当前数据，保证滤波值稳定）=====
+    int window = qMax(1, m_averagePoints);
+    auto smooth = [window](const QVector<double> &input) -> QVector<double> {
+        QVector<double> output(input.size());
+        for (int i = 0; i < input.size(); ++i) {
+            int start = qMax(0, i - window + 1);  // 只包含当前点及之前的 window-1 个点
+            int end = i;
+            double sum = 0.0;
+            for (int j = start; j <= end; ++j) sum += input[j];
+            output[i] = sum / (end - start + 1);
+        }
+        return output;
+    };
+
+    m_filtA = smooth(m_rawA);
+    m_filtB = smooth(m_rawB);
+    m_filtAB = smooth(m_rawAB);
+
+    // ===== 调试输出：打印最新数据点，用于和文件内容对比 =====
+    int idx = m_time.size() - 1;
+
+    // 更新界面显示（使用原始或滤波数据）
     updatePlots(false);
 
-    if (m_saveWorker) {
+    // 文件写入（仅在保存激活且文件已打开）
+    if (m_isSaving && m_saveFile.isOpen() && !m_time.isEmpty()) {
         QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
-        .arg(timeSec, 0, 'f', 3)
-            .arg(rawA, 0, 'f', 4)
-            .arg(m_filtA.isEmpty() ? 0 : m_filtA.last(), 0, 'f', 4)
-            .arg(rawB, 0, 'f', 4)
-            .arg(m_filtB.isEmpty() ? 0 : m_filtB.last(), 0, 'f', 4)
-            .arg(rawAB, 0, 'f', 4)
-            .arg(m_filtAB.isEmpty() ? 0 : m_filtAB.last(), 0, 'f', 4);
-        QMetaObject::invokeMethod(m_saveWorker, "appendData", Qt::QueuedConnection,
-                                  Q_ARG(QString, dataLine));
+        .arg(m_time.at(idx), 0, 'f', 3)
+            .arg(m_rawA.at(idx), 0, 'f', 4)
+            .arg(m_filtA.at(idx), 0, 'f', 4)
+            .arg(m_rawB.at(idx), 0, 'f', 4)
+            .arg(m_filtB.at(idx), 0, 'f', 4)
+            .arg(m_rawAB.at(idx), 0, 'f', 4)
+            .arg(m_filtAB.at(idx), 0, 'f', 4);
+        m_saveStream << dataLine << "\n";
+
     }
 }
 
@@ -592,6 +749,7 @@ void MonitorTab::onFilterCompleted(const QVector<double> &filtA,
                                    const QVector<double> &filtB,
                                    const QVector<double> &filtAB)
 {
+    // 仅更新滤波结果，绘图和文件保存分别由定时器和快速数据槽处理
     if (filtA.size() != m_time.size() ||
         filtB.size() != m_time.size() ||
         filtAB.size() != m_time.size()) {
@@ -601,8 +759,8 @@ void MonitorTab::onFilterCompleted(const QVector<double> &filtA,
     m_filtA = filtA;
     m_filtB = filtB;
     m_filtAB = filtAB;
-    updatePlots(false);
 }
+
 
 void MonitorTab::updateDisplayLength()
 {
@@ -621,45 +779,55 @@ void MonitorTab::updatePlots(bool force)
 {
     if (m_time.isEmpty()) return;
 
-    // A通道
-    if (force || !m_panelA->isPaused()) {
+    // ========== A通道 ==========
+    if (m_panelA->isPaused()) {
+        // 暂停状态：仅当强制刷新且有快照时使用快照
+        if (force && m_panelA->hasSnapshot()) {
+            QVector<double> x = m_panelA->snapshotX();
+            QVector<double> y = m_showFiltA ? m_panelA->snapshotFiltY() : m_panelA->snapshotRawY();
+            if (!x.isEmpty() && !y.isEmpty() && x.size() == y.size())
+                m_panelA->setData(x, y);
+        }
+        // 否则不更新，保持当前画面
+    } else {
+        // 非暂停：正常实时更新
         QVector<double> x = m_time;
         QVector<double> y = m_showFiltA ? m_filtA : m_rawA;
         if (y.size() == x.size() && !y.isEmpty())
             m_panelA->setData(x, y);
-    } else if (force && m_panelA->hasSnapshot()) {
-        QVector<double> x = m_panelA->snapshotX();
-        QVector<double> y = m_showFiltA ? m_panelA->snapshotFiltY() : m_panelA->snapshotRawY();
-        if (!x.isEmpty() && !y.isEmpty() && x.size() == y.size())
-            m_panelA->setData(x, y);
     }
 
-    // B通道
-    if (force || !m_panelB->isPaused()) {
+    // ========== B通道 ==========
+    if (m_panelB->isPaused()) {
+        if (force && m_panelB->hasSnapshot()) {
+            QVector<double> x = m_panelB->snapshotX();
+            QVector<double> y = m_showFiltB ? m_panelB->snapshotFiltY() : m_panelB->snapshotRawY();
+            if (!x.isEmpty() && !y.isEmpty() && x.size() == y.size())
+                m_panelB->setData(x, y);
+        }
+    } else {
         QVector<double> x = m_time;
         QVector<double> y = m_showFiltB ? m_filtB : m_rawB;
         if (y.size() == x.size() && !y.isEmpty())
             m_panelB->setData(x, y);
-    } else if (force && m_panelB->hasSnapshot()) {
-        QVector<double> x = m_panelB->snapshotX();
-        QVector<double> y = m_showFiltB ? m_panelB->snapshotFiltY() : m_panelB->snapshotRawY();
-        if (!x.isEmpty() && !y.isEmpty() && x.size() == y.size())
-            m_panelB->setData(x, y);
     }
 
-    // AB通道
-    if (force || !m_panelAB->isPaused()) {
+    // ========== AB通道 ==========
+    if (m_panelAB->isPaused()) {
+        if (force && m_panelAB->hasSnapshot()) {
+            QVector<double> x = m_panelAB->snapshotX();
+            QVector<double> y = m_showFiltAB ? m_panelAB->snapshotFiltY() : m_panelAB->snapshotRawY();
+            if (!x.isEmpty() && !y.isEmpty() && x.size() == y.size())
+                m_panelAB->setData(x, y);
+        }
+    } else {
         QVector<double> x = m_time;
         QVector<double> y = m_showFiltAB ? m_filtAB : m_rawAB;
         if (y.size() == x.size() && !y.isEmpty())
             m_panelAB->setData(x, y);
-    } else if (force && m_panelAB->hasSnapshot()) {
-        QVector<double> x = m_panelAB->snapshotX();
-        QVector<double> y = m_showFiltAB ? m_panelAB->snapshotFiltY() : m_panelAB->snapshotRawY();
-        if (!x.isEmpty() && !y.isEmpty() && x.size() == y.size())
-            m_panelAB->setData(x, y);
     }
 }
+
 
 // 设置相关槽函数
 void MonitorTab::setTemperature()
@@ -732,62 +900,87 @@ void MonitorTab::setPrecision()
     emit logMessage("TCD", QString("最小精度设置已发送: 寄存器值 %1").arg(val));
 }
 
+void MonitorTab::applyGlobalParameters()
+{
+    QTimer::singleShot(0,    this, [this]() { setTemperature(); });
+    QTimer::singleShot(200,  this, [this]() { setPowerA(); });
+    QTimer::singleShot(400,  this, [this]() { setPowerB(); });
+    QTimer::singleShot(600,  this, [this]() { setLevelA(); });
+    QTimer::singleShot(800,  this, [this]() { setLevelB(); });
+    QTimer::singleShot(1000, this, [this]() { setLevelAB(); });
+    QTimer::singleShot(1200, this, [this]() { setPrecision(); });
+}
+
+void MonitorTab::setDetectorEnabled(bool enabled)
+{
+    if (!m_enableCheck) return;
+
+    // 临时阻止信号，避免触发手动点击时的命令发送逻辑
+    m_enableCheck->blockSignals(true);
+    m_enableCheck->setChecked(enabled);
+    m_enableCheck->setText(enabled ? "关闭检测器" : "开启检测器");
+    m_enableCheck->setStyleSheet(enabled ? "background-color: red; color: white;" :
+                                     "background-color: gray; color: white;");
+    m_enableCheck->blockSignals(false);
+}
+
 void MonitorTab::checkSettingFeedback()
 {
     if (!m_comm) return;
 
-    // 辅助宏，简化重复代码
-    auto verifyAndResend = [this](quint16 address, quint16 expected,
-                                  bool &pendingFlag, int &retryCounter,
-                                  const std::function<void()> &resendFunc,
-                                  const QString &name) {
-        if (!pendingFlag) return;
-        m_comm->requestRegisterRead(address, [=, &pendingFlag, &retryCounter](quint16 actual) {
+    // 使用静态集合记录正在验证的参数，防止并发重复验证
+    static QSet<QString> verifyingParams;
+
+    auto startVerify = [this](const QString &paramName,
+                              quint16 address,
+                              quint16 expected,
+                              bool &pendingFlag,
+                              int &retryCount,
+                              const std::function<void()> &resendFunc)
+    {
+        if (!pendingFlag || verifyingParams.contains(paramName))
+            return;  // 无需验证或已在验证中
+
+        verifyingParams.insert(paramName);   // 标记正在验证
+
+        m_comm->requestRegisterRead(address, [=, &pendingFlag, &retryCount](quint16 actual) {
+            verifyingParams.remove(paramName);   // 验证完成，移除标记
+
+            if (!pendingFlag) return;   // 可能已被其他逻辑取消
+
             if (actual == expected) {
                 pendingFlag = false;
-                retryCounter = 0;
-                emit logMessage("TCD", QString("%1设置成功").arg(name));
+                retryCount = 0;
+                emit logMessage("TCD", QString("%1 设置成功").arg(paramName));
             } else {
-                if (retryCounter < 3) {
+                if (retryCount < 3) {
                     resendFunc();
-                    retryCounter++;
-                    emit logMessage("TCD", QString("%1设置失败，重试%1/3").arg(name).arg(retryCounter));
+                    retryCount++;
+                    emit logMessage("TCD", QString("%1 设置失败，正在重试 (%1/3)").arg(paramName).arg(retryCount));
                 } else {
                     pendingFlag = false;
-                    retryCounter = 0;
-                    emit logMessage("TCD", QString("%1设置失败，已达最大重试次数").arg(name));
+                    retryCount = 0;
+                    emit logMessage("TCD", QString("%1 设置失败，已超过最大重试次数").arg(paramName));
                 }
             }
         });
     };
 
-    // 温度
-    verifyAndResend(0x03E8, m_pendingTemp, m_hasPendingTemp, m_retryTemp,
-                    [this]() { m_comm->setTcdTemperature(m_pendingTemp); }, "TCD温度");
-
-    // 灯丝功率A
-    verifyAndResend(0x03E9, m_pendingPowerA, m_hasPendingPowerA, m_retryPowerA,
-                    [this]() { m_comm->setLampPowerA(m_pendingPowerA); }, "灯丝功率A");
-
-    // 灯丝功率B
-    verifyAndResend(0x03EA, m_pendingPowerB, m_hasPendingPowerB, m_retryPowerB,
-                    [this]() { m_comm->setLampPowerB(m_pendingPowerB); }, "灯丝功率B");
-
-    // 最小精度
-    verifyAndResend(0x03F1, m_pendingPrecision, m_hasPendingPrecision, m_retryPrecision,
-                    [this]() { m_comm->setPrecision(m_pendingPrecision); }, "最小精度");
-
-    // A电平
-    verifyAndResend(0x03ED, m_pendingLevelA, m_hasPendingLevelA, m_retryLevelA,
-                    [this]() { m_comm->setChannelAVoltage(m_pendingLevelA); }, "A电平");
-
-    // B电平
-    verifyAndResend(0x03EE, m_pendingLevelB, m_hasPendingLevelB, m_retryLevelB,
-                    [this]() { m_comm->setChannelBVoltage(m_pendingLevelB); }, "B电平");
-
-    // AB电平
-    verifyAndResend(0x03EF, m_pendingLevelAB, m_hasPendingLevelAB, m_retryLevelAB,
-                    [this]() { m_comm->setChannelABVoltage(m_pendingLevelAB); }, "AB电平");
+    // 各参数独立验证
+    startVerify("TCD温度", 0x03E8, m_pendingTemp, m_hasPendingTemp, m_retryTemp,
+                [this]() { m_comm->setTcdTemperature(m_pendingTemp); });
+    startVerify("灯丝功率A", 0x03E9, m_pendingPowerA, m_hasPendingPowerA, m_retryPowerA,
+                [this]() { m_comm->setLampPowerA(m_pendingPowerA); });
+    startVerify("灯丝功率B", 0x03EA, m_pendingPowerB, m_hasPendingPowerB, m_retryPowerB,
+                [this]() { m_comm->setLampPowerB(m_pendingPowerB); });
+    startVerify("最小精度", 0x03F1, m_pendingPrecision, m_hasPendingPrecision, m_retryPrecision,
+                [this]() { m_comm->setPrecision(m_pendingPrecision); });
+    startVerify("A电平", 0x03ED, m_pendingLevelA, m_hasPendingLevelA, m_retryLevelA,
+                [this]() { m_comm->setChannelAVoltage(m_pendingLevelA); });
+    startVerify("B电平", 0x03EE, m_pendingLevelB, m_hasPendingLevelB, m_retryLevelB,
+                [this]() { m_comm->setChannelBVoltage(m_pendingLevelB); });
+    startVerify("AB电平", 0x03EF, m_pendingLevelAB, m_hasPendingLevelAB, m_retryLevelAB,
+                [this]() { m_comm->setChannelABVoltage(m_pendingLevelAB); });
 }
 
 void MonitorTab::refreshParameters()
@@ -819,6 +1012,11 @@ void MonitorTab::stopFileSave()
 
 void MonitorTab::startAutoSave()
 {
+    if (m_isSaving) {
+        // 已有保存任务在运行，忽略新的请求
+        return;
+    }
+
     QString fileName = m_fileNameEdit->text().trimmed();
     if (fileName.isEmpty()) fileName = "data";
     QString fullPath = m_pathEdit->text().trimmed();
@@ -834,19 +1032,42 @@ void MonitorTab::startAutoSave()
 
 void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
 {
-    m_lastSavedIndex = 0;
-    if (m_saveWorker) {
-        QMetaObject::invokeMethod(m_saveWorker, "startSaving", Qt::QueuedConnection,
-                                  Q_ARG(QString, fileName), Q_ARG(int, durationMinutes));
+    m_isSaving = true;
+    if (m_saveFile.isOpen()) m_saveFile.close();
+
+    m_saveFile.setFileName(fileName);
+    if (!m_saveFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        qWarning() << "无法打开文件:" << fileName;
+        m_isSaving = false;
+        return;
+    }
+    m_saveStream.setDevice(&m_saveFile);
+    m_saveStream << "时间 滤波前A 滤波后A 滤波前B 滤波后B 滤波前A-B 滤波后A-B\n";
+
+    // 写入已缓冲的所有数据（此时滤波值已固定，直接使用）
+    for (int i = 0; i < m_time.size(); ++i) {
+        QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
+        .arg(m_time.at(i), 0, 'f', 3)
+            .arg(m_rawA.at(i), 0, 'f', 4)
+            .arg(m_filtA.at(i), 0, 'f', 4)
+            .arg(m_rawB.at(i), 0, 'f', 4)
+            .arg(m_filtB.at(i), 0, 'f', 4)
+            .arg(m_rawAB.at(i), 0, 'f', 4)
+            .arg(m_filtAB.at(i), 0, 'f', 4);
+        m_saveStream << dataLine << "\n";
     }
 }
 
 void MonitorTab::stopDataSave()
 {
-    if (m_saveWorker) {
-        QMetaObject::invokeMethod(m_saveWorker, "stopSaving", Qt::QueuedConnection);
+    m_isSaving = false;
+    if (m_saveFile.isOpen()) {
+        m_saveStream.flush();
+        m_saveFile.close();
     }
 }
+
+
 
 void MonitorTab::setChannelAVisible(bool visible) { if (m_panelA) m_panelA->setVisible(visible); }
 void MonitorTab::setChannelBVisible(bool visible) { if (m_panelB) m_panelB->setVisible(visible); }

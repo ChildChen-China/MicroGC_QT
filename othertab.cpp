@@ -69,7 +69,7 @@ void OtherTab::setCommunication(Communication *comm)
 {
     m_comm = comm;
     if (m_comm) {
-        connect(m_comm, &Communication::dataUpdated, this, &OtherTab::updateFromComm);
+        connect(m_comm, &Communication::slowDataUpdated, this, &OtherTab::updateFromComm);
     }
 }
 

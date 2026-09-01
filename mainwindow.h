@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QModbusTcpClient>
+#include "autoprocess.h"
 
 class QTabWidget;
 class LogWidget;
@@ -22,7 +23,8 @@ private slots:
     void openConnectionDialog();
     void openDataProcessing();
     void openSettings();
-    void startAutoProcess();
+    void openAutoProcessSettings();
+    void startStopAutoProcess();       // 合并的开始/停止槽
     void resetSystem();
     void toggleLogVisible(bool visible);
     void onCommunicationConnected();
@@ -38,6 +40,12 @@ private:
     MonitorTab *m_monitorTab;
     ControlTab *m_controlTab;
     OtherTab *m_otherTab;
+
+    AutoProcessManager *m_autoProcess;
+    QAction *m_startStopAction;        // 开始/停止切换按钮动作
+
+    int m_flow1Setpoint = 200;
+    int m_flow2Setpoint = 100;
 };
 
 #endif // MAINWINDOW_H

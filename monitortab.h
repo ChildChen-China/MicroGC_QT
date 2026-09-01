@@ -95,6 +95,8 @@ private:
     QVector<double> m_snapshotX, m_snapshotRawY, m_snapshotFiltY;
     bool m_inverted;
     bool m_hasSnapshot;
+    bool m_xRangeInitialized = false;
+    bool m_rangeInitialized = false;
 };
 
 class MonitorTab : public QWidget
@@ -109,6 +111,9 @@ public:
     void setCollectPoints(int points);
     void setAveragePoints(int points);
 
+    int getParameter(const QString &key) const;                 // 读取参数值
+    void setParameter(const QString &key, int value);           // 设置参数值（不发送命令）
+
 public slots:
     void startAutoSave();
     void startDataSave(const QString &fileName, int durationMinutes);
@@ -118,7 +123,10 @@ public slots:
     void setChannelAVisible(bool visible);
     void setChannelBVisible(bool visible);
     void setChannelABVisible(bool visible);
-
+    void applyGlobalParameters();   // 发送所有设置命令
+    void setDetectorEnabled(bool enabled);
+    void onFastDataUpdated();
+    void onSlowDataUpdated();
 signals:
     void logMessage(const QString &type, const QString &event);
 
@@ -146,8 +154,7 @@ private slots:
 private:
     void setupControlPanel(QVBoxLayout *layout);
     void setupSignalPanel(QVBoxLayout *layout);
-    void initSaveThread();
-    void initFilterThread();
+
 
     QVector<double> m_time;
     QVector<double> m_rawA, m_rawB, m_rawAB;
@@ -203,6 +210,15 @@ private:
     int m_retryLevelA = 0;
     int m_retryLevelB = 0;
     int m_retryLevelAB = 0;
+    QTimer *m_plotTimer;
+    bool m_isSaving = false;
+    qint64 m_startTime;
+    // 用于同步写入的变量
+    bool m_waitingForFilter = false;
+    int m_filtDataLength = 0;   // 当前滤波数据对应的原始数据长度（索引上限）
+    QFile m_saveFile;          // 主线程直接写文件
+    QTextStream m_saveStream;  // 文本流
+
 };
 
 #endif // MONITORTAB_H

@@ -7,6 +7,7 @@ CONFIG += c++17
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    autoprocess.cpp \
     communication.cpp \
     controltab.cpp \
     dataprocessing.cpp \
@@ -20,6 +21,7 @@ SOURCES += \
     qcustomplot.cpp
 
 HEADERS += \
+    autoprocess.h \
     communication.h \
     controltab.h \
     dataprocessing.h \

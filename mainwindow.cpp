@@ -25,6 +25,7 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QDateTime>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -34,12 +35,33 @@ MainWindow::MainWindow(QWidget *parent)
     , m_monitorTab(nullptr)
     , m_controlTab(nullptr)
     , m_otherTab(nullptr)
+    , m_autoProcess(nullptr)
+    , m_startStopAction(nullptr)
 {
     setWindowTitle("MicroGC");
     resize(1500, 900);
 
     m_comm = new Communication(this);
     m_log = new LogWidget(this);
+
+    // 创建自动流程管理器
+    m_autoProcess = new AutoProcessManager(m_comm, this);
+    connect(m_autoProcess, &AutoProcessManager::logMessage, this, [this](const QString &type, const QString &event) {
+        m_log->appendLog(type, event);
+    });
+    connect(m_autoProcess, &AutoProcessManager::stateChanged, this, [this](const QString &state) {
+        m_log->appendLog("自动流程", "状态: " + state);
+        // 更新开始/停止按钮文字
+        if (m_startStopAction) {
+            if (state == "空闲") {
+                m_startStopAction->setText("开始自动流程");
+                m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+            } else {
+                m_startStopAction->setText("停止");
+                m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+            }
+        }
+    });
 
     // 连接通信信号
     connect(m_comm, &Communication::logPacket, this, [this](const QString &direction, const QString &dataHex) {
@@ -51,8 +73,23 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_comm, &Communication::connected, this, &MainWindow::onCommunicationConnected);
     connect(m_comm, &Communication::disconnected, this, &MainWindow::onCommunicationDisconnected);
 
+    connect(m_autoProcess, &AutoProcessManager::deviceStateChanged,
+            this, [this](const QString &device, bool state) {
+                if (device == "六通阀") {
+                    if (m_controlTab) m_controlTab->updateDeviceState(device, state);
+                } else if (device == "TCD") {
+                    if (m_monitorTab) m_monitorTab->setDetectorEnabled(state);
+                }
+            });
+
     createActions();
     createTabs();
+
+    // 连接自动流程的数据记录开始/停止信号
+    connect(m_autoProcess, &AutoProcessManager::saveDataTriggered,
+            m_monitorTab, &MonitorTab::startAutoSave);
+    connect(m_autoProcess, &AutoProcessManager::stopDataSaveTriggered,
+            m_monitorTab, &MonitorTab::stopDataSave);
 
     QWidget *central = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(central);
@@ -78,6 +115,7 @@ void MainWindow::createActions()
     settingsBtn->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     QMenu *settingsMenu = new QMenu(settingsBtn);
     QAction *globalSettingsAct = settingsMenu->addAction("全局参数设置");
+    QAction *autoSettingsAct = settingsMenu->addAction("自动流程设置");
     settingsMenu->addSeparator();
     QAction *hideAAct = settingsMenu->addAction("隐藏通道A");
     hideAAct->setCheckable(true);
@@ -90,13 +128,15 @@ void MainWindow::createActions()
     settingsBtn->setMenu(settingsMenu);
     toolbar->addWidget(settingsBtn);
 
-    QAction *startAct = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始");
+    // 开始/停止切换按钮
+    m_startStopAction = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始自动流程");
     QAction *resetAct = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), "复位");
 
     connect(connectAct, &QAction::triggered, this, &MainWindow::openConnectionDialog);
     connect(dataAct, &QAction::triggered, this, &MainWindow::openDataProcessing);
     connect(globalSettingsAct, &QAction::triggered, this, &MainWindow::openSettings);
-    connect(startAct, &QAction::triggered, this, &MainWindow::startAutoProcess);
+    connect(autoSettingsAct, &QAction::triggered, this, &MainWindow::openAutoProcessSettings);
+    connect(m_startStopAction, &QAction::triggered, this, &MainWindow::startStopAutoProcess);
     connect(resetAct, &QAction::triggered, this, &MainWindow::resetSystem);
 
     connect(hideAAct, &QAction::toggled, this, [this](bool checked) {
@@ -123,16 +163,12 @@ void MainWindow::createTabs()
     m_tabs->addTab(m_monitorTab, "监视");
     m_tabs->addTab(m_otherTab, "其他");
 
-    // 将通信对象传递给各页面
     m_controlTab->setCommunication(m_comm);
     m_monitorTab->setCommunication(m_comm);
     m_otherTab->setCommunication(m_comm);
 
-    // 连接控制页信号
     connect(m_controlTab, &ControlTab::commandRequested, this, [this](const QString &device, bool state) {
-        // 根据设备名发送对应命令
         if (device.startsWith("NV")) {
-            // 电磁阀整体或单个？当前协议只有整体寄存器，暂时忽略
             m_log->appendLog("控制", QString("阀门 %1 状态:%2").arg(device).arg(state ? "开启" : "关闭"));
         }
     });
@@ -140,11 +176,9 @@ void MainWindow::createTabs()
         m_log->appendLog(type, event);
     });
     connect(m_controlTab, &ControlTab::sixWayValveToggled, this, [this]() {
-        // 六通阀切换，触发保存（监视页已有）
         if (m_monitorTab) m_monitorTab->startAutoSave();
     });
 
-    // 其他页面日志
     connect(m_monitorTab, &MonitorTab::logMessage, this, [this](const QString &type, const QString &event) {
         m_log->appendLog(type, event);
     });
@@ -206,37 +240,35 @@ void MainWindow::openSettings()
 
     QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
 
-    // ================= 第一块：流量控制器 =================
+    // ================= 流量控制器 =================
     QGroupBox *flowGroup = new QGroupBox("流量控制器", &dlg);
     QFormLayout *flowForm = new QFormLayout(flowGroup);
 
     QSpinBox *flow1Spin = new QSpinBox(flowGroup);
     flow1Spin->setRange(0, 10000);
     flow1Spin->setSuffix(" mL/min");
-    flow1Spin->setValue(200);
+    flow1Spin->setValue(m_flow1Setpoint);
 
     QSpinBox *flow2Spin = new QSpinBox(flowGroup);
     flow2Spin->setRange(0, 10000);
     flow2Spin->setSuffix(" mL/min");
-    flow2Spin->setValue(100);
+    flow2Spin->setValue(m_flow2Setpoint);
 
     flowForm->addRow("流量1:", flow1Spin);
     flowForm->addRow("流量2:", flow2Spin);
 
-    // 采集点数 + 设置按钮
     QSpinBox *collectPointsSpin = new QSpinBox(flowGroup);
     collectPointsSpin->setRange(100, 100000);
-    collectPointsSpin->setValue(1000);
+    collectPointsSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("collectPoints") : 1000);
     QPushButton *setCollectBtn = new QPushButton("设置", flowGroup);
     QHBoxLayout *collectRow = new QHBoxLayout;
     collectRow->addWidget(collectPointsSpin);
     collectRow->addWidget(setCollectBtn);
     flowForm->addRow("采集点数:", collectRow);
 
-    // 均点设置 + 设置按钮
     QSpinBox *averageSpin = new QSpinBox(flowGroup);
     averageSpin->setRange(1, 1000);
-    averageSpin->setValue(5);
+    averageSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("averagePoints") : 5);
     QPushButton *setAverageBtn = new QPushButton("设置", flowGroup);
     QHBoxLayout *averageRow = new QHBoxLayout;
     averageRow->addWidget(averageSpin);
@@ -245,45 +277,47 @@ void MainWindow::openSettings()
 
     mainLayout->addWidget(flowGroup);
 
-    // ================= 第二块：TCD 参数 =================
+    // ================= TCD 参数 =================
     QGroupBox *tcdGroup = new QGroupBox("TCD 参数", &dlg);
     QFormLayout *tcdForm = new QFormLayout(tcdGroup);
 
     QSpinBox *tempSpin = new QSpinBox(tcdGroup);
     tempSpin->setRange(-100, 500);
     tempSpin->setSuffix(" ℃");
-    tempSpin->setValue(25);
+    tempSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("temperature") : 25);
 
     QSpinBox *powerASpin = new QSpinBox(tcdGroup);
     powerASpin->setRange(0, 100);
     powerASpin->setSuffix(" %");
-    powerASpin->setValue(50);
+    powerASpin->setValue(m_monitorTab ? m_monitorTab->getParameter("powerA") : 50);
 
     QSpinBox *powerBSpin = new QSpinBox(tcdGroup);
     powerBSpin->setRange(0, 100);
     powerBSpin->setSuffix(" %");
-    powerBSpin->setValue(50);
+    powerBSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("powerB") : 50);
 
     QComboBox *precisionCombo = new QComboBox(tcdGroup);
     precisionCombo->addItem("0.01", 1);
     precisionCombo->addItem("0.1", 10);
     precisionCombo->addItem("1", 100);
-    precisionCombo->setCurrentIndex(0);
+    int currentPrecision = m_monitorTab ? m_monitorTab->getParameter("precision") : 1;
+    int idx = precisionCombo->findData(currentPrecision);
+    precisionCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 
     QSpinBox *levelASpin = new QSpinBox(tcdGroup);
     levelASpin->setRange(-1000, 1000);
     levelASpin->setSuffix(" mV");
-    levelASpin->setValue(0);
+    levelASpin->setValue(m_monitorTab ? m_monitorTab->getParameter("levelA") : 0);
 
     QSpinBox *levelBSpin = new QSpinBox(tcdGroup);
     levelBSpin->setRange(-1000, 1000);
     levelBSpin->setSuffix(" mV");
-    levelBSpin->setValue(0);
+    levelBSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("levelB") : 0);
 
     QSpinBox *levelABSpin = new QSpinBox(tcdGroup);
     levelABSpin->setRange(-1000, 1000);
     levelABSpin->setSuffix(" mV");
-    levelABSpin->setValue(0);
+    levelABSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("levelAB") : 0);
 
     tcdForm->addRow("设置温度:", tempSpin);
     tcdForm->addRow("灯丝A功率:", powerASpin);
@@ -310,35 +344,47 @@ void MainWindow::openSettings()
 
     connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
 
-    // 采集点数/均点即时设置
     connect(setCollectBtn, &QPushButton::clicked, this, [this, collectPointsSpin]() {
-        if (m_monitorTab) m_monitorTab->setCollectPoints(collectPointsSpin->value());
+        if (m_monitorTab) m_monitorTab->setParameter("collectPoints", collectPointsSpin->value());
         m_log->appendLog("设置", QString("采集点数设置为 %1").arg(collectPointsSpin->value()));
     });
     connect(setAverageBtn, &QPushButton::clicked, this, [this, averageSpin]() {
-        if (m_monitorTab) m_monitorTab->setAveragePoints(averageSpin->value());
+        if (m_monitorTab) m_monitorTab->setParameter("averagePoints", averageSpin->value());
         m_log->appendLog("设置", QString("均点设置设置为 %1").arg(averageSpin->value()));
     });
 
-    // 应用按钮：发送所有整数参数
     connect(applyBtn, &QPushButton::clicked, &dlg, [&]() {
-        m_comm->setFlow1Setpoint(static_cast<quint16>(flow1Spin->value()));
-        m_comm->setFlow2Setpoint(static_cast<quint16>(flow2Spin->value()));
-        m_comm->setTcdTemperature(static_cast<quint16>(tempSpin->value()));
-        m_comm->setLampPowerA(static_cast<quint16>(powerASpin->value()));
-        m_comm->setLampPowerB(static_cast<quint16>(powerBSpin->value()));
-        m_comm->setPrecision(static_cast<quint16>(precisionCombo->currentData().toInt()));
-        m_comm->setChannelAVoltage(static_cast<quint16>(levelASpin->value()));
-        m_comm->setChannelBVoltage(static_cast<quint16>(levelBSpin->value()));
-        m_comm->setChannelABVoltage(static_cast<quint16>(levelABSpin->value()));
-        m_log->appendLog("设置", "全局参数已应用");
+        if (m_monitorTab) {
+            m_monitorTab->setParameter("temperature", tempSpin->value());
+            m_monitorTab->setParameter("powerA", powerASpin->value());
+            m_monitorTab->setParameter("powerB", powerBSpin->value());
+            m_monitorTab->setParameter("levelA", levelASpin->value());
+            m_monitorTab->setParameter("levelB", levelBSpin->value());
+            m_monitorTab->setParameter("levelAB", levelABSpin->value());
+            m_monitorTab->setParameter("precision", precisionCombo->currentData().toInt());
+        }
+
+        if (m_monitorTab)
+            m_monitorTab->applyGlobalParameters();
+
+        int flow1Val = flow1Spin->value();
+        int flow2Val = flow2Spin->value();
+        m_flow1Setpoint = flow1Val;
+        m_flow2Setpoint = flow2Val;
+
+        QTimer::singleShot(1500, this, [this, flow1Val, flow2Val]() {
+            if (m_comm) {
+                m_comm->setFlow1Setpoint(static_cast<quint16>(flow1Val));
+                m_comm->setFlow2Setpoint(static_cast<quint16>(flow2Val));
+            }
+        });
+
+        m_log->appendLog("设置", "全局参数已应用并同步");
     });
 
-    // 保存全局参数到文件
     connect(saveBtn, &QPushButton::clicked, &dlg, [&]() {
         QString fileName = QFileDialog::getSaveFileName(&dlg, "保存全局参数", QString(), "配置文件 (*.ini)");
         if (fileName.isEmpty()) return;
-
         QSettings settings(fileName, QSettings::IniFormat);
         settings.setValue("flow1", flow1Spin->value());
         settings.setValue("flow2", flow2Spin->value());
@@ -352,15 +398,12 @@ void MainWindow::openSettings()
         settings.setValue("levelB", levelBSpin->value());
         settings.setValue("levelAB", levelABSpin->value());
         settings.sync();
-
         m_log->appendLog("设置", QString("全局参数已保存至 %1").arg(fileName));
     });
 
-    // 从文件加载全局参数
     connect(openBtn, &QPushButton::clicked, &dlg, [&]() {
         QString fileName = QFileDialog::getOpenFileName(&dlg, "打开全局参数", QString(), "配置文件 (*.ini)");
         if (fileName.isEmpty()) return;
-
         QSettings settings(fileName, QSettings::IniFormat);
         flow1Spin->setValue(settings.value("flow1", 200).toInt());
         flow2Spin->setValue(settings.value("flow2", 100).toInt());
@@ -369,30 +412,152 @@ void MainWindow::openSettings()
         tempSpin->setValue(settings.value("temperature", 25).toInt());
         powerASpin->setValue(settings.value("powerA", 50).toInt());
         powerBSpin->setValue(settings.value("powerB", 50).toInt());
-
-        int precisionValue = settings.value("precision", 1).toInt();
-        int idx = precisionCombo->findData(precisionValue);
-        if (idx >= 0) precisionCombo->setCurrentIndex(idx);
-
+        int prec = settings.value("precision", 1).toInt();
+        int pidx = precisionCombo->findData(prec);
+        if (pidx >= 0) precisionCombo->setCurrentIndex(pidx);
         levelASpin->setValue(settings.value("levelA", 0).toInt());
         levelBSpin->setValue(settings.value("levelB", 0).toInt());
         levelABSpin->setValue(settings.value("levelAB", 0).toInt());
-
         m_log->appendLog("设置", QString("全局参数已从 %1 加载").arg(fileName));
     });
 
     dlg.exec();
 }
 
-void MainWindow::startAutoProcess()
+void MainWindow::openAutoProcessSettings()
 {
-    m_log->appendLog("自动流程", "自动分析流程开始");
-    if (m_monitorTab) m_monitorTab->startAutoSave();
+    QDialog dlg(this);
+    dlg.setWindowTitle("自动流程设置");
+    dlg.setMinimumWidth(450);
+
+    QFormLayout form(&dlg);
+
+    QSettings settings("MyCompany", "MicroGC");
+    int columnOvenTemp = settings.value("auto/columnOvenTemp", 60).toInt();
+    int tcdTemp = settings.value("auto/tcdTemp", 120).toInt();
+    int carrierFlow1 = settings.value("auto/carrierFlow1", 200).toInt();
+    int carrierFlow2 = settings.value("auto/carrierFlow2", 100).toInt();
+    double tempTolerance = settings.value("auto/tempTolerance", 0.5).toDouble();
+    double startRecordMin = settings.value("auto/startRecordMin", 0.01).toDouble();
+    double valveOpenMin = settings.value("auto/valveOpenMin", 0.1).toDouble();
+    double valveCloseMin = settings.value("auto/valveCloseMin", 0.8).toDouble();
+    double stopRecordMin = settings.value("auto/stopRecordMin", 2.0).toDouble();
+    double coolDownTemp = settings.value("auto/coolDownTemp", 50.0).toDouble();
+
+    QSpinBox *ovenSpin = new QSpinBox(&dlg);
+    ovenSpin->setRange(0, 400);
+    ovenSpin->setValue(columnOvenTemp);
+    ovenSpin->setSuffix(" ℃");
+
+    QSpinBox *tcdSpin = new QSpinBox(&dlg);
+    tcdSpin->setRange(0, 500);
+    tcdSpin->setValue(tcdTemp);
+    tcdSpin->setSuffix(" ℃");
+
+    QSpinBox *flow1Spin = new QSpinBox(&dlg);
+    flow1Spin->setRange(0, 10000);
+    flow1Spin->setValue(carrierFlow1);
+
+    QSpinBox *flow2Spin = new QSpinBox(&dlg);
+    flow2Spin->setRange(0, 10000);
+    flow2Spin->setValue(carrierFlow2);
+
+    QDoubleSpinBox *toleranceSpin = new QDoubleSpinBox(&dlg);
+    toleranceSpin->setRange(0.1, 5.0);
+    toleranceSpin->setDecimals(1);
+    toleranceSpin->setValue(tempTolerance);
+    toleranceSpin->setSuffix(" ℃");
+
+    QDoubleSpinBox *startRecSpin = new QDoubleSpinBox(&dlg);
+    startRecSpin->setRange(0.0, 10.0);
+    startRecSpin->setDecimals(2);
+    startRecSpin->setValue(startRecordMin);
+    startRecSpin->setSuffix(" min");
+
+    QDoubleSpinBox *valveOpenSpin = new QDoubleSpinBox(&dlg);
+    valveOpenSpin->setRange(0.0, 10.0);
+    valveOpenSpin->setDecimals(2);
+    valveOpenSpin->setValue(valveOpenMin);
+    valveOpenSpin->setSuffix(" min");
+
+    QDoubleSpinBox *valveCloseSpin = new QDoubleSpinBox(&dlg);
+    valveCloseSpin->setRange(0.0, 10.0);
+    valveCloseSpin->setDecimals(2);
+    valveCloseSpin->setValue(valveCloseMin);
+    valveCloseSpin->setSuffix(" min");
+
+    QDoubleSpinBox *stopRecSpin = new QDoubleSpinBox(&dlg);
+    stopRecSpin->setRange(0.0, 60.0);
+    stopRecSpin->setDecimals(2);
+    stopRecSpin->setValue(stopRecordMin);
+    stopRecSpin->setSuffix(" min");
+
+    QDoubleSpinBox *coolSpin = new QDoubleSpinBox(&dlg);
+    coolSpin->setRange(0.0, 100.0);
+    coolSpin->setDecimals(1);
+    coolSpin->setValue(coolDownTemp);
+    coolSpin->setSuffix(" ℃");
+
+    form.addRow("柱温箱目标温度:", ovenSpin);
+    form.addRow("TCD目标温度:", tcdSpin);
+    form.addRow("载气流量1:", flow1Spin);
+    form.addRow("载气流量2:", flow2Spin);
+    form.addRow("温度稳定容差:", toleranceSpin);
+    form.addRow("开始记录时间:", startRecSpin);
+    form.addRow("六通阀开启时间:", valveOpenSpin);
+    form.addRow("六通阀关闭时间:", valveCloseSpin);
+    form.addRow("停止记录时间:", stopRecSpin);
+    form.addRow("冷却安全温度:", coolSpin);
+
+    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    form.addRow(&buttons);
+    connect(&buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(&buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        settings.setValue("auto/columnOvenTemp", ovenSpin->value());
+        settings.setValue("auto/tcdTemp", tcdSpin->value());
+        settings.setValue("auto/carrierFlow1", flow1Spin->value());
+        settings.setValue("auto/carrierFlow2", flow2Spin->value());
+        settings.setValue("auto/tempTolerance", toleranceSpin->value());
+        settings.setValue("auto/startRecordMin", startRecSpin->value());
+        settings.setValue("auto/valveOpenMin", valveOpenSpin->value());
+        settings.setValue("auto/valveCloseMin", valveCloseSpin->value());
+        settings.setValue("auto/stopRecordMin", stopRecSpin->value());
+        settings.setValue("auto/coolDownTemp", coolSpin->value());
+
+        AutoProcessSettings aps;
+        aps.columnOvenTemp = ovenSpin->value();
+        aps.tcdTemp = tcdSpin->value();
+        aps.carrierFlow1 = flow1Spin->value();
+        aps.carrierFlow2 = flow2Spin->value();
+        aps.tempTolerance = toleranceSpin->value();
+        aps.startRecordMin = startRecSpin->value();
+        aps.valveOpenMin = valveOpenSpin->value();
+        aps.valveCloseMin = valveCloseSpin->value();
+        aps.stopRecordMin = stopRecSpin->value();
+        aps.coolDownTemp = coolSpin->value();
+        m_autoProcess->setSettings(aps);
+
+        m_log->appendLog("自动流程", "设置已保存");
+    }
+}
+
+void MainWindow::startStopAutoProcess()
+{
+    if (!m_autoProcess) return;
+    if (m_autoProcess->currentStateName() == "空闲") {
+        m_autoProcess->start();
+    } else {
+        m_autoProcess->stop();
+    }
 }
 
 void MainWindow::resetSystem()
 {
-    m_log->appendLog("复位", "系统复位指令已下发");
+    if (m_autoProcess) {
+        m_autoProcess->reset();
+    }
 }
 
 void MainWindow::toggleLogVisible(bool visible)
