@@ -75,7 +75,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_autoProcess, &AutoProcessManager::deviceStateChanged,
             this, [this](const QString &device, bool state) {
-                if (device == "六通阀") {
+                if (device == "六通阀" || device == "电磁阀") {
                     if (m_controlTab) m_controlTab->updateDeviceState(device, state);
                 } else if (device == "TCD") {
                     if (m_monitorTab) m_monitorTab->setDetectorEnabled(state);

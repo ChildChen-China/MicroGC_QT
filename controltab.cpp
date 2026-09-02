@@ -368,26 +368,16 @@ void ControlTab::setCommunication(Communication *comm)
 void ControlTab::handleValveClicked(ValveItem *valve)
 {
     if (!valve) return;
+
+    // 仅处理电磁阀点击
+    if (valve->name() != "电磁阀")
+        return;
+
+    // 切换电磁阀新状态
     bool newState = !valve->state();
     valve->setState(newState);
 
-    // 当前只有一个电磁阀，直接控制最低位（bit0）
-    if (m_comm) {
-        m_comm->setValveBit(0, newState);
-    }
-
-    emit commandRequested("电磁阀", newState);
-    emit logMessage("控制", QString("电磁阀状态: %1").arg(newState ? "开启" : "关闭"));
-}
-
-void ControlTab::handleSixWayClicked(SixWayValveItem *clickedValve)
-{
-    if (!clickedValve) return;
-
-    // 获取当前点击阀的新状态（取反）
-    bool newState = !clickedValve->state();
-
-    // 遍历场景中所有六通阀，同步状态
+    // 同步六通阀图形状态
     const auto items = m_scene->items();
     for (QGraphicsItem *item : items) {
         if (auto *six = dynamic_cast<SixWayValveItem*>(item)) {
@@ -395,12 +385,22 @@ void ControlTab::handleSixWayClicked(SixWayValveItem *clickedValve)
         }
     }
 
-    // 发送日志和命令（硬件只有一个六通阀）
-    emit logMessage("控制", QString("六通阀切换至 %1 状态").arg(newState ? "B" : "A"));
+    // 发送电磁阀命令（bit0）
     if (m_comm) {
+        m_comm->setValveBit(0, newState);
+        // 发送六通阀命令
         m_comm->setSixWayValve1(newState);
     }
-    emit sixWayValveToggled();
+
+    emit commandRequested("电磁阀", newState);
+    emit logMessage("控制", QString("电磁阀状态: %1，六通阀同步切换").arg(newState ? "开启" : "关闭"));
+    emit sixWayValveToggled();  // 触发保存等操作（如果仍有需要）
+}
+
+void ControlTab::handleSixWayClicked(SixWayValveItem *clickedValve)
+{
+    // 六通阀不再直接响应点击，由电磁阀控制
+    Q_UNUSED(clickedValve);
 }
 
 void ControlTab::showRealtimeDialog(const QString &title)

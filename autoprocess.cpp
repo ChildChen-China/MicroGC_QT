@@ -86,23 +86,31 @@ void AutoProcessManager::reset()
 
     m_verifyQueue.clear();
 
-    // 发送所有关闭命令，并加入验证队列
+    // 关闭检测器
     m_comm->enableDetector(false);
     enqueueVerify("关闭检测器", 0x03EB, 0,
                   [this]() { m_comm->enableDetector(false); });
 
+    // 关闭柱温箱
     m_comm->setColumnOvenEnable(false);
     enqueueVerify("关闭柱温箱", 0x0400, 0,
                   [this]() { m_comm->setColumnOvenEnable(false); });
 
+    // 关闭流量1
     m_comm->setFlow1Setpoint(0);
     enqueueVerify("关闭流量1", 0x0402, 0,
                   [this]() { m_comm->setFlow1Setpoint(0); });
 
+    // 关闭流量2
     m_comm->setFlow2Setpoint(0);
     enqueueVerify("关闭流量2", 0x0403, 0,
                   [this]() { m_comm->setFlow2Setpoint(0); });
 
+    // 先关闭电磁阀（bit0）
+    m_comm->setValveBit(0, false);
+    emit deviceStateChanged("电磁阀", false);
+
+    // 再关闭六通阀
     m_comm->setSixWayValve1(false);
     m_comm->setSixWayValve2(false);
     enqueueVerify("关闭六通阀", 0x0404, 0,
@@ -236,20 +244,38 @@ void AutoProcessManager::sendTestSequenceCommand(double elapsedMin)
     // 六通阀开启（只执行一次）
     if (!m_valveOpenDone && elapsedMin >= m_settings.valveOpenMin) {
         m_valveOpenDone = true;
+
+        // 先开启电磁阀（bit0），不加入验证队列（直接发送）
+        m_comm->setValveBit(0, true);
+
+        // 再开启六通阀
         m_comm->setSixWayValve1(true);
         enqueueVerify("开启六通阀", 0x0404, 1,
                       [this]() { m_comm->setSixWayValve1(true); });
+
+        // 更新图形状态
+        emit deviceStateChanged("电磁阀", true);
         emit deviceStateChanged("六通阀", true);
+
         emit logMessage("自动流程", "六通阀开启");
     }
 
     // 六通阀关闭（只执行一次）
     if (m_valveOpenDone && !m_valveCloseDone && elapsedMin >= m_settings.valveCloseMin) {
         m_valveCloseDone = true;
+
+        // 先关闭电磁阀（bit0），不加入验证队列
+        m_comm->setValveBit(0, false);
+
+        // 再关闭六通阀
         m_comm->setSixWayValve1(false);
         enqueueVerify("关闭六通阀", 0x0404, 0,
                       [this]() { m_comm->setSixWayValve1(false); });
+
+        // 更新图形状态
+        emit deviceStateChanged("电磁阀", false);
         emit deviceStateChanged("六通阀", false);
+
         emit logMessage("自动流程", "六通阀关闭");
     }
 }
@@ -263,15 +289,22 @@ void AutoProcessManager::beginCooling()
     }
 
     m_verifyQueue.clear();   // 清空可能残留的验证队列
+
+    // 关闭检测器
     m_comm->enableDetector(false);
     enqueueVerify("关闭检测器", 0x03EB, 0,
                   [this]() { m_comm->enableDetector(false); });
+
+    // 设置柱温箱冷却温度
     m_comm->setColumnOven1Temperature(static_cast<quint16>(m_settings.coolDownTemp));
     enqueueVerify("设置柱温箱冷却温度", 0x03FF, m_settings.coolDownTemp,
                   [this]() { m_comm->setColumnOven1Temperature(m_settings.coolDownTemp); });
-    m_comm->setColumnOvenEnable(true);   // 保持开启以降温
+
+    // 保持柱温箱开启以降温
+    m_comm->setColumnOvenEnable(true);
     enqueueVerify("保持柱温箱开启", 0x0400, 1,
                   [this]() { m_comm->setColumnOvenEnable(true); });
+
     emit deviceStateChanged("TCD", false);
 
     changeState(CoolingDown);

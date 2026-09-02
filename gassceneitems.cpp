@@ -354,7 +354,7 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addLine(215, 252, 649, 252, blackPen);
     addArrow(scene, QPointF(418, 252), true);
 
-    ValveItem *nv1 = new ValveItem("", QPointF(692, 253));
+    ValveItem *nv1 = new ValveItem("电磁阀", QPointF(692, 253));
     scene->addItem(nv1);
 
     scene->addLine(729, 252, 1075, 252, blackPen);
@@ -561,12 +561,6 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     addLabel("TCD载气出", QPointF(289, 1274));
     addLabel("TCD参比气出", QPointF(284, 1406));
 
-    auto *valveLabel = new QGraphicsTextItem("电磁阀");
-    valveLabel->setFont(QFont("Arial", 18, QFont::Bold));
-    valveLabel->setDefaultTextColor(Qt::black);
-    valveLabel->setPos(660, 280);
-    scene->addItem(valveLabel);
-
     auto *fineLabel = new QGraphicsTextItem("微调阀");
     fineLabel->setFont(QFont("Arial", 18, QFont::Bold));
     fineLabel->setDefaultTextColor(Qt::black);
@@ -656,13 +650,16 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     const auto items = scene->items();
     for (QGraphicsItem *item : items) {
         if (auto *valve = dynamic_cast<ValveItem*>(item)) {
-            QObject::connect(valve, &ValveItem::clicked, ctrl, &ControlTab::handleValveClicked);
+            // 电磁阀点击连接到 handleValveClicked，由它控制六通阀
+            if (valve->name() == "电磁阀") {
+                QObject::connect(valve, &ValveItem::clicked, ctrl, &ControlTab::handleValveClicked);
+            }
             QObject::connect(valve, &ValveItem::stateChanged, ctrl, [ctrl](const QString &name, bool state) {
                 emit ctrl->commandRequested(name, state);
             });
         }
         if (auto *sixValve = dynamic_cast<SixWayValveItem*>(item)) {
-            QObject::connect(sixValve, &SixWayValveItem::clicked, ctrl, &ControlTab::handleSixWayClicked);
+            // 六通阀不再响应点击，只保留状态变化信号用于可能的日志
             QObject::connect(sixValve, &SixWayValveItem::stateChanged, ctrl, [ctrl](const QString &name, bool state) {
                 emit ctrl->commandRequested(name, state);
             });

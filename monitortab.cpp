@@ -221,10 +221,17 @@ MonitorTab::MonitorTab(QWidget *parent)
     m_plotTimer->setInterval(50);
     connect(m_plotTimer, &QTimer::timeout, this, [this]() { updatePlots(false); });
     m_plotTimer->start();
+
+    // 创建自动停止保存定时器（单次触发）
+    m_autoStopTimer = new QTimer(this);
+    m_autoStopTimer->setSingleShot(true);
+    connect(m_autoStopTimer, &QTimer::timeout, this, &MonitorTab::stopDataSave);
 }
 
 MonitorTab::~MonitorTab()
 {
+    if (m_autoStopTimer && m_autoStopTimer->isActive())
+        m_autoStopTimer->stop();
     if (m_saveFile.isOpen()) {
         m_saveStream.flush();
         m_saveFile.close();
@@ -450,9 +457,24 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     m_durationSpin = new QSpinBox(fileGroup);
     m_durationSpin->setRange(1, 1440);
     m_durationSpin->setSuffix(" min");
+
+    // 从 QSettings 读取上次保存的时长
+    QSettings settings("MyCompany", "MicroGC");
+    int savedDuration = settings.value("monitor/durationMinutes", 1).toInt();
+    m_durationSpin->setValue(savedDuration);
+
+    // 当用户修改时长时，保存到 QSettings
+    connect(m_durationSpin, qOverload<int>(&QSpinBox::valueChanged), this, [](int val) {
+        QSettings settings("MyCompany", "MicroGC");
+        settings.setValue("monitor/durationMinutes", val);
+        settings.sync();
+    });
+
     durationRow->addWidget(m_durationSpin);
     durationRow->addStretch();
     fileLayout->addLayout(durationRow);
+
+
 
     auto *pathRow = new QHBoxLayout;
     pathRow->addWidget(new QLabel("路径:", fileGroup));
@@ -657,8 +679,6 @@ void MonitorTab::startAutoSave()
 
 void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
 {
-    Q_UNUSED(durationMinutes); // 主线程写入不使用自动停止，如需自动停止可自行添加定时器
-
     m_isSaving = true;
     if (m_saveFile.isOpen()) {
         m_saveStream.flush();
@@ -686,11 +706,17 @@ void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
             .arg(m_filtAB.at(i), 0, 'f', 4);
         m_saveStream << dataLine << "\n";
     }
+
+    // 启动自动停止定时器（分钟转毫秒）
+    if (durationMinutes > 0) {
+        m_autoStopTimer->start(durationMinutes * 60 * 1000);
+    }
 }
 
 void MonitorTab::stopDataSave()
 {
     m_isSaving = false;
+    m_autoStopTimer->stop();   // 停止自动停止定时器（无论是否已触发）
     if (m_saveFile.isOpen()) {
         m_saveStream.flush();
         m_saveFile.close();

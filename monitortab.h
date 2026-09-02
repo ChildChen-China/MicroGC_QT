@@ -168,6 +168,8 @@ private:
     QTextStream m_saveStream;
     bool m_isSaving = false;
     qint64 m_startTime;          // 相对时间起点（毫秒）
+    QTimer *m_autoStopTimer;     // 自动停止保存定时器（单次）
+
 
     // ---- 绘图刷新定时器 ----
     QTimer *m_plotTimer;
