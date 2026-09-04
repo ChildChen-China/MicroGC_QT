@@ -167,6 +167,25 @@ void MainWindow::createTabs()
     m_monitorTab->setCommunication(m_comm);
     m_otherTab->setCommunication(m_comm);
 
+    // 控制页面的显示长度设置传递到其他页面
+    connect(m_controlTab, &ControlTab::displayLengthChanged,
+            this, [this](const QString &device, int length) {
+                if (!m_otherTab) return;
+                if (device == "Oven") {
+                    m_otherTab->setColumnOvenLength(length);
+                } else if (device == "Pressure") {
+                    m_otherTab->setPressureLength(length);
+                } else if (device == "TCD") {
+                    // 注意：这里假设"TCD"对应TCD温度，如果不是请调整
+                    m_otherTab->setTcdTempLength(length);
+                } else if (device == "Flow1") {
+                    m_otherTab->setFlow1Length(length);
+                } else if (device == "Flow2") {
+                    m_otherTab->setFlow2Length(length);
+                }
+            });
+
+    // 原有其他信号连接保持不变
     connect(m_controlTab, &ControlTab::commandRequested, this, [this](const QString &device, bool state) {
         if (device.startsWith("NV")) {
             m_log->appendLog("控制", QString("阀门 %1 状态:%2").arg(device).arg(state ? "开启" : "关闭"));

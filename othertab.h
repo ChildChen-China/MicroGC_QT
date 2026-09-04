@@ -5,12 +5,13 @@
 #include <QTimer>
 
 class QPushButton;
-class QHBoxLayout;
 class QCheckBox;
 class QButtonGroup;
 class QGroupBox;
-class InteractivePlot;
 class QRadioButton;
+class QHBoxLayout;
+class QVBoxLayout;
+class InteractivePlot;
 class Communication;
 
 class OtherTab : public QWidget
@@ -20,10 +21,10 @@ class OtherTab : public QWidget
 public:
     explicit OtherTab(QWidget *parent = nullptr);
 
-    // 设置各通道显示长度（暂未使用，保留接口）
+    // 设置各通道显示长度
     void setColumnOvenLength(int points);
     void setPressureLength(int points);
-    void setVacuumLength(int points);
+    void setTcdTempLength(int points);
     void setFlow1Length(int points);
     void setFlow2Length(int points);
 
@@ -37,21 +38,21 @@ private slots:
     void setCrosshairEnabled(bool enabled);
     void toggleSensorVisible();
     void updateFromComm();
-    void scrollPlots();          // 平滑滚动槽函数
+    void scrollPlots();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    QHBoxLayout* setupFirstRow();          // 顶部选项行
+    QVBoxLayout* setupPlotLayout();        // 图表区域（包含上下两个水平布局）
+
     void resetAllPlots();
-    QHBoxLayout* setupFirstRow();
-    QHBoxLayout* setupSecondRow();
-    QHBoxLayout* setupThirdRow();
 
     QPushButton *m_resetBtn;
     QCheckBox *m_chkColumnOven;
     QCheckBox *m_chkPressure;
-    QCheckBox *m_chkVacuum;
+    QCheckBox *m_chkTcdTemp;
     QCheckBox *m_chkFlow1;
     QCheckBox *m_chkFlow2;
     QButtonGroup *m_zoomGroup;
@@ -59,21 +60,34 @@ private:
 
     InteractivePlot *m_plotColumnOven;
     InteractivePlot *m_plotPressure;
-    InteractivePlot *m_plotVacuum;
+    InteractivePlot *m_plotTcdTemp;
     InteractivePlot *m_plotFlow1;
     InteractivePlot *m_plotFlow2;
 
     QGroupBox *m_groupColumnOven;
     QGroupBox *m_groupPressure;
-    QGroupBox *m_groupVacuum;
+    QGroupBox *m_groupTcdTemp;
     QGroupBox *m_groupFlow1;
     QGroupBox *m_groupFlow2;
 
     Communication *m_comm;
 
     bool m_autoScrollEnabled;
-    QTimer *m_scrollTimer;          // 平滑滚动定时器
-    qint64 m_startTime;             // 起始时间（毫秒）
+
+    // 显示长度
+    int m_columnOvenLength = 1000;
+    int m_pressureLength = 1000;
+    int m_tcdTempLength = 1000;
+    int m_flow1Length = 1000;
+    int m_flow2Length = 1000;
+
+    QTimer *m_scrollTimer;
+    qint64 m_startTime;
+
+    // 两行图表布局
+    QHBoxLayout *m_topRowLayout;      // 第一行（柱温箱、压力、TCD温度）
+    QHBoxLayout *m_bottomRowLayout;   // 第二行（流量器1、流量器2）
+    QVBoxLayout *m_plotLayout;        // 垂直布局，包含上面两个行布局
 };
 
 #endif // OTHERTAB_H

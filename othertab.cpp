@@ -23,69 +23,52 @@ OtherTab::OtherTab(QWidget *parent)
     , m_resetBtn(nullptr)
     , m_chkColumnOven(nullptr)
     , m_chkPressure(nullptr)
-    , m_chkVacuum(nullptr)
+    , m_chkTcdTemp(nullptr)
     , m_chkFlow1(nullptr)
     , m_chkFlow2(nullptr)
     , m_zoomGroup(nullptr)
     , m_crosshairCheck(nullptr)
     , m_plotColumnOven(nullptr)
     , m_plotPressure(nullptr)
-    , m_plotVacuum(nullptr)
+    , m_plotTcdTemp(nullptr)
     , m_plotFlow1(nullptr)
     , m_plotFlow2(nullptr)
     , m_groupColumnOven(nullptr)
     , m_groupPressure(nullptr)
-    , m_groupVacuum(nullptr)
+    , m_groupTcdTemp(nullptr)
     , m_groupFlow1(nullptr)
     , m_groupFlow2(nullptr)
     , m_comm(nullptr)
-    , m_autoScrollEnabled(true),
-    m_scrollTimer(new QTimer(this)),
-    m_startTime(QDateTime::currentMSecsSinceEpoch())
+    , m_autoScrollEnabled(true)
+    , m_scrollTimer(new QTimer(this))
+    , m_startTime(QDateTime::currentMSecsSinceEpoch())
+    , m_topRowLayout(nullptr)
+    , m_bottomRowLayout(nullptr)
+    , m_plotLayout(nullptr)
 {
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->addLayout(setupFirstRow());
-    mainLayout->addLayout(setupSecondRow(), 1);
-    mainLayout->addLayout(setupThirdRow(), 1);
+    mainLayout->addLayout(setupPlotLayout(), 1);
 
     // 默认全部显示
     m_chkColumnOven->setChecked(true);
     m_chkPressure->setChecked(true);
-    m_chkVacuum->setChecked(true);
+    m_chkTcdTemp->setChecked(true);
     m_chkFlow1->setChecked(true);
     m_chkFlow2->setChecked(true);
-
     toggleSensorVisible();
 
-    // 安装事件过滤器，捕获鼠标操作
-    QList<InteractivePlot*> plots = {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+    // 安装事件过滤器
+    QList<InteractivePlot*> plots = {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                       m_plotFlow1, m_plotFlow2};
     for (InteractivePlot *plot : plots) {
-        if (plot) {
-            plot->installEventFilter(this);
-        }
+        if (plot) plot->installEventFilter(this);
     }
-    // 创建滚动定时器，100ms触发一次
+
+    // 滚动定时器
     m_scrollTimer->setInterval(100);
     connect(m_scrollTimer, &QTimer::timeout, this, &OtherTab::scrollPlots);
     m_scrollTimer->start();
-}
-
-void OtherTab::scrollPlots()
-{
-    // 未连接或不允许自动滚动时，不更新X轴
-    if (!m_comm || !m_comm->isConnected() || !m_autoScrollEnabled)
-        return;
-
-    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
-
-    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
-                                  m_plotFlow1, m_plotFlow2}) {
-        if (plot && plot->isVisible()) {
-            plot->xAxis->setRange(timeSec - 20, timeSec);
-            plot->replot(QCustomPlot::rpQueuedReplot);
-        }
-    }
 }
 
 void OtherTab::setCommunication(Communication *comm)
@@ -93,7 +76,6 @@ void OtherTab::setCommunication(Communication *comm)
     m_comm = comm;
     if (m_comm) {
         connect(m_comm, &Communication::slowDataUpdated, this, &OtherTab::updateFromComm);
-        // 连接成功时重置起始时间，避免显示未连接期间的空白
         connect(m_comm, &Communication::connected, this, [this]() {
             m_startTime = QDateTime::currentMSecsSinceEpoch();
         });
@@ -104,22 +86,20 @@ QHBoxLayout* OtherTab::setupFirstRow()
 {
     auto *layout = new QHBoxLayout;
 
-    // 传感器显示选择
     m_chkColumnOven = new QCheckBox("柱温箱", this);
     m_chkPressure = new QCheckBox("压力传感器", this);
-    m_chkVacuum = new QCheckBox("真空规", this);
+    m_chkTcdTemp = new QCheckBox("TCD温度", this);
     m_chkFlow1 = new QCheckBox("流量器1", this);
     m_chkFlow2 = new QCheckBox("流量器2", this);
 
     layout->addWidget(m_chkColumnOven);
     layout->addWidget(m_chkPressure);
-    layout->addWidget(m_chkVacuum);
+    layout->addWidget(m_chkTcdTemp);
     layout->addWidget(m_chkFlow1);
     layout->addWidget(m_chkFlow2);
 
     layout->addSpacing(10);
 
-    // 缩放模式
     QRadioButton *zoomX = new QRadioButton("X轴缩放", this);
     QRadioButton *zoomY = new QRadioButton("Y轴缩放", this);
     QRadioButton *zoomXY = new QRadioButton("XY缩放", this);
@@ -137,18 +117,15 @@ QHBoxLayout* OtherTab::setupFirstRow()
     layout->addWidget(zoomXY);
     layout->addWidget(zoomRect);
 
-    // 十字标
     m_crosshairCheck = new QCheckBox("十字标", this);
     layout->addWidget(m_crosshairCheck);
 
-    // 还原按钮
     m_resetBtn = new QPushButton("还原", this);
     layout->addWidget(m_resetBtn);
     connect(m_resetBtn, &QPushButton::clicked, this, &OtherTab::resetAllPlots);
 
     layout->addStretch();
 
-    // 连接信号
     connect(m_zoomGroup, qOverload<int>(&QButtonGroup::idClicked),
             this, &OtherTab::applyZoomMode);
     connect(m_crosshairCheck, &QCheckBox::toggled,
@@ -156,29 +133,34 @@ QHBoxLayout* OtherTab::setupFirstRow()
 
     connect(m_chkColumnOven, &QCheckBox::toggled, this, &OtherTab::toggleSensorVisible);
     connect(m_chkPressure, &QCheckBox::toggled, this, &OtherTab::toggleSensorVisible);
-    connect(m_chkVacuum, &QCheckBox::toggled, this, &OtherTab::toggleSensorVisible);
+    connect(m_chkTcdTemp, &QCheckBox::toggled, this, &OtherTab::toggleSensorVisible);
     connect(m_chkFlow1, &QCheckBox::toggled, this, &OtherTab::toggleSensorVisible);
     connect(m_chkFlow2, &QCheckBox::toggled, this, &OtherTab::toggleSensorVisible);
 
     return layout;
 }
 
-QHBoxLayout* OtherTab::setupSecondRow()
+QVBoxLayout* OtherTab::setupPlotLayout()
 {
-    auto *layout = new QHBoxLayout;
+    m_plotLayout = new QVBoxLayout;
+    m_plotLayout->setSpacing(6);
+
+    // 第一行水平布局
+    m_topRowLayout = new QHBoxLayout;
+    m_topRowLayout->setSpacing(6);
 
     // 柱温箱
     m_groupColumnOven = new QGroupBox("柱温箱", this);
     m_groupColumnOven->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *coLayout = new QVBoxLayout(m_groupColumnOven);
     m_plotColumnOven = new InteractivePlot(m_groupColumnOven);
-    m_plotColumnOven->addGraph();   // graph 0
+    m_plotColumnOven->addGraph();
     m_plotColumnOven->graph(0)->setPen(QPen(Qt::blue));
     m_plotColumnOven->xAxis->setLabel("Time(s)");
     m_plotColumnOven->yAxis->setLabel("Temperature(°C)");
     m_plotColumnOven->setCrosshairName("柱温箱");
     coLayout->addWidget(m_plotColumnOven);
-    layout->addWidget(m_groupColumnOven, 1);
+    m_topRowLayout->addWidget(m_groupColumnOven, 1);
 
     // 压力传感器
     m_groupPressure = new QGroupBox("压力传感器", this);
@@ -191,27 +173,24 @@ QHBoxLayout* OtherTab::setupSecondRow()
     m_plotPressure->yAxis->setLabel("Pressure(kPa)");
     m_plotPressure->setCrosshairName("压力传感器");
     pLayout->addWidget(m_plotPressure);
-    layout->addWidget(m_groupPressure, 1);
+    m_topRowLayout->addWidget(m_groupPressure, 1);
 
-    // 真空规（暂无数据，仅显示空曲线）
-    m_groupVacuum = new QGroupBox("真空规", this);
-    m_groupVacuum->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto *vLayout = new QVBoxLayout(m_groupVacuum);
-    m_plotVacuum = new InteractivePlot(m_groupVacuum);
-    m_plotVacuum->addGraph();
-    m_plotVacuum->graph(0)->setPen(QPen(Qt::darkYellow));
-    m_plotVacuum->xAxis->setLabel("Time(s)");
-    m_plotVacuum->yAxis->setLabel("Pressure(Pa)");
-    m_plotVacuum->setCrosshairName("真空规");
-    vLayout->addWidget(m_plotVacuum);
-    layout->addWidget(m_groupVacuum, 1);
+    // TCD温度
+    m_groupTcdTemp = new QGroupBox("TCD温度", this);
+    m_groupTcdTemp->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto *tcdLayout = new QVBoxLayout(m_groupTcdTemp);
+    m_plotTcdTemp = new InteractivePlot(m_groupTcdTemp);
+    m_plotTcdTemp->addGraph();
+    m_plotTcdTemp->graph(0)->setPen(QPen(Qt::darkYellow));
+    m_plotTcdTemp->xAxis->setLabel("Time(s)");
+    m_plotTcdTemp->yAxis->setLabel("Temperature(°C)");
+    m_plotTcdTemp->setCrosshairName("TCD温度");
+    tcdLayout->addWidget(m_plotTcdTemp);
+    m_topRowLayout->addWidget(m_groupTcdTemp, 1);
 
-    return layout;
-}
-
-QHBoxLayout* OtherTab::setupThirdRow()
-{
-    auto *layout = new QHBoxLayout;
+    // 第二行水平布局
+    m_bottomRowLayout = new QHBoxLayout;
+    m_bottomRowLayout->setSpacing(6);
 
     // 流量器1
     m_groupFlow1 = new QGroupBox("流量器1", this);
@@ -224,7 +203,7 @@ QHBoxLayout* OtherTab::setupThirdRow()
     m_plotFlow1->yAxis->setLabel("Flow(ml/min)");
     m_plotFlow1->setCrosshairName("流量器1");
     f1Layout->addWidget(m_plotFlow1);
-    layout->addWidget(m_groupFlow1, 1);
+    m_bottomRowLayout->addWidget(m_groupFlow1, 1);
 
     // 流量器2
     m_groupFlow2 = new QGroupBox("流量器2", this);
@@ -237,55 +216,59 @@ QHBoxLayout* OtherTab::setupThirdRow()
     m_plotFlow2->yAxis->setLabel("Flow(ml/min)");
     m_plotFlow2->setCrosshairName("流量器2");
     f2Layout->addWidget(m_plotFlow2);
-    layout->addWidget(m_groupFlow2, 1);
+    m_bottomRowLayout->addWidget(m_groupFlow2, 1);
 
-    return layout;
+    m_plotLayout->addLayout(m_topRowLayout, 1);
+    m_plotLayout->addLayout(m_bottomRowLayout, 1);
+
+    return m_plotLayout;
 }
 
 void OtherTab::updateFromComm()
 {
     if (!m_comm || !m_comm->isConnected())
         return;
-
     if (QApplication::mouseButtons() & Qt::LeftButton)
-        return; // 用户交互时不更新数据（可选，根据需要调整）
+        return;
 
     double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
 
-    // 柱温箱温度
-    if (m_plotColumnOven && m_plotColumnOven->graphCount() > 0) {
-        m_plotColumnOven->graph(0)->addData(timeSec, m_comm->columnOven1Temp());
-        if (m_autoScrollEnabled) m_plotColumnOven->yAxis->rescale(true);
-    }
+    auto updatePlot = [this, timeSec](InteractivePlot* plot, double value, int maxPoints) {
+        if (!plot || plot->graphCount() == 0) return;
+        QCPGraph *graph = plot->graph(0);
+        graph->addData(timeSec, value);
+        if (maxPoints > 0 && graph->dataCount() > maxPoints) {
+            int excess = graph->dataCount() - maxPoints;
+            for (int i = 0; i < excess; ++i)
+                graph->data()->remove(graph->data()->begin()->key);
+        }
+        if (m_autoScrollEnabled)
+            plot->yAxis->rescale(true);
+    };
 
-    // 压力传感器
-    if (m_plotPressure && m_plotPressure->graphCount() > 0) {
-        m_plotPressure->graph(0)->addData(timeSec, m_comm->pressure());
-        if (m_autoScrollEnabled) m_plotPressure->yAxis->rescale(true);
-    }
+    updatePlot(m_plotColumnOven, m_comm->columnOven1Temp(), m_columnOvenLength);
+    updatePlot(m_plotPressure, m_comm->pressure(), m_pressureLength);
+    updatePlot(m_plotTcdTemp, m_comm->tcdTemperature(), m_tcdTempLength);
+    updatePlot(m_plotFlow1, m_comm->flow1(), m_flow1Length);
+    updatePlot(m_plotFlow2, m_comm->flow2(), m_flow2Length);
 
-    // 真空规
-    if (m_plotVacuum && m_plotVacuum->graphCount() > 0) {
-        m_plotVacuum->graph(0)->addData(timeSec, 0.0);
-        if (m_autoScrollEnabled) m_plotVacuum->yAxis->rescale(true);
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
+                                  m_plotFlow1, m_plotFlow2}) {
+        if (plot && plot->isVisible())
+            plot->replot(QCustomPlot::rpQueuedReplot);
     }
+}
 
-    // 流量器1
-    if (m_plotFlow1 && m_plotFlow1->graphCount() > 0) {
-        m_plotFlow1->graph(0)->addData(timeSec, m_comm->flow1());
-        if (m_autoScrollEnabled) m_plotFlow1->yAxis->rescale(true);
-    }
+void OtherTab::scrollPlots()
+{
+    if (!m_comm || !m_comm->isConnected() || !m_autoScrollEnabled)
+        return;
 
-    // 流量器2
-    if (m_plotFlow2 && m_plotFlow2->graphCount() > 0) {
-        m_plotFlow2->graph(0)->addData(timeSec, m_comm->flow2());
-        if (m_autoScrollEnabled) m_plotFlow2->yAxis->rescale(true);
-    }
-
-    // 统一重绘（延迟重绘，减少负担）
-    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
         if (plot && plot->isVisible()) {
+            plot->xAxis->setRange(timeSec - 20, timeSec);
             plot->replot(QCustomPlot::rpQueuedReplot);
         }
     }
@@ -294,7 +277,7 @@ void OtherTab::updateFromComm()
 void OtherTab::resetAllPlots()
 {
     m_autoScrollEnabled = true;
-    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
         if (plot) {
             plot->rescaleAxes();
@@ -305,10 +288,8 @@ void OtherTab::resetAllPlots()
 
 bool OtherTab::eventFilter(QObject *watched, QEvent *event)
 {
-    if (event->type() == QEvent::MouseButtonPress ||
-        event->type() == QEvent::Wheel) {
+    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Wheel)
         m_autoScrollEnabled = false;
-    }
     return QWidget::eventFilter(watched, event);
 }
 
@@ -316,7 +297,7 @@ void OtherTab::applyZoomMode()
 {
     int id = m_zoomGroup->checkedId();
     auto mode = static_cast<InteractivePlot::ZoomMode>(id);
-    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
         if (plot) plot->setZoomMode(mode);
     }
@@ -324,7 +305,7 @@ void OtherTab::applyZoomMode()
 
 void OtherTab::setCrosshairEnabled(bool enabled)
 {
-    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotVacuum,
+    for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
         if (plot) plot->setCrosshairEnabled(enabled);
     }
@@ -332,9 +313,45 @@ void OtherTab::setCrosshairEnabled(bool enabled)
 
 void OtherTab::toggleSensorVisible()
 {
+    // 设置可见性
     m_groupColumnOven->setVisible(m_chkColumnOven->isChecked());
     m_groupPressure->setVisible(m_chkPressure->isChecked());
-    m_groupVacuum->setVisible(m_chkVacuum->isChecked());
+    m_groupTcdTemp->setVisible(m_chkTcdTemp->isChecked());
     m_groupFlow1->setVisible(m_chkFlow1->isChecked());
     m_groupFlow2->setVisible(m_chkFlow2->isChecked());
+
+    // 动态调整垂直拉伸因子，实现跨行
+    int topVisible = 0;
+    if (m_groupColumnOven->isVisible()) topVisible++;
+    if (m_groupPressure->isVisible()) topVisible++;
+    if (m_groupTcdTemp->isVisible()) topVisible++;
+
+    int bottomVisible = 0;
+    if (m_groupFlow1->isVisible()) bottomVisible++;
+    if (m_groupFlow2->isVisible()) bottomVisible++;
+
+    // 根据可见性设置拉伸因子
+    if (m_plotLayout) {
+        // 索引0对应第一行，索引1对应第二行
+        if (topVisible == 0 && bottomVisible > 0) {
+            // 第一行完全隐藏，第二行占据全部空间
+            m_plotLayout->setStretch(0, 0);
+            m_plotLayout->setStretch(1, 1);
+        } else if (bottomVisible == 0 && topVisible > 0) {
+            // 第二行完全隐藏，第一行占据全部空间
+            m_plotLayout->setStretch(0, 1);
+            m_plotLayout->setStretch(1, 0);
+        } else {
+            // 两行都有可见项，均分
+            m_plotLayout->setStretch(0, 1);
+            m_plotLayout->setStretch(1, 1);
+        }
+    }
 }
+
+// 长度设置接口
+void OtherTab::setColumnOvenLength(int points) { m_columnOvenLength = points; }
+void OtherTab::setPressureLength(int points) { m_pressureLength = points; }
+void OtherTab::setTcdTempLength(int points) { m_tcdTempLength = points; }
+void OtherTab::setFlow1Length(int points) { m_flow1Length = points; }
+void OtherTab::setFlow2Length(int points) { m_flow2Length = points; }
