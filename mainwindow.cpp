@@ -266,19 +266,16 @@ void MainWindow::openSettings()
     QSpinBox *flow1Spin = new QSpinBox(flowGroup);
     flow1Spin->setRange(0, 10000);
     flow1Spin->setSuffix(" mL/min");
-    flow1Spin->setValue(m_flow1Setpoint);  // 初始值后面会从 QSettings 覆盖
 
     QSpinBox *flow2Spin = new QSpinBox(flowGroup);
     flow2Spin->setRange(0, 10000);
     flow2Spin->setSuffix(" mL/min");
-    flow2Spin->setValue(m_flow2Setpoint);
 
     flowForm->addRow("流量1:", flow1Spin);
     flowForm->addRow("流量2:", flow2Spin);
 
     QSpinBox *collectPointsSpin = new QSpinBox(flowGroup);
     collectPointsSpin->setRange(100, 100000);
-    collectPointsSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("collectPoints") : 1000);
     QPushButton *setCollectBtn = new QPushButton("设置", flowGroup);
     QHBoxLayout *collectRow = new QHBoxLayout;
     collectRow->addWidget(collectPointsSpin);
@@ -287,7 +284,6 @@ void MainWindow::openSettings()
 
     QSpinBox *averageSpin = new QSpinBox(flowGroup);
     averageSpin->setRange(1, 1000);
-    averageSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("averagePoints") : 5);
     QPushButton *setAverageBtn = new QPushButton("设置", flowGroup);
     QHBoxLayout *averageRow = new QHBoxLayout;
     averageRow->addWidget(averageSpin);
@@ -303,40 +299,31 @@ void MainWindow::openSettings()
     QSpinBox *tempSpin = new QSpinBox(tcdGroup);
     tempSpin->setRange(-100, 500);
     tempSpin->setSuffix(" ℃");
-    tempSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("temperature") : 25);
 
     QSpinBox *powerASpin = new QSpinBox(tcdGroup);
     powerASpin->setRange(0, 100);
     powerASpin->setSuffix(" %");
-    powerASpin->setValue(m_monitorTab ? m_monitorTab->getParameter("powerA") : 50);
 
     QSpinBox *powerBSpin = new QSpinBox(tcdGroup);
     powerBSpin->setRange(0, 100);
     powerBSpin->setSuffix(" %");
-    powerBSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("powerB") : 50);
 
     QComboBox *precisionCombo = new QComboBox(tcdGroup);
     precisionCombo->addItem("0.01", 1);
     precisionCombo->addItem("0.1", 10);
     precisionCombo->addItem("1", 100);
-    int currentPrecision = m_monitorTab ? m_monitorTab->getParameter("precision") : 1;
-    int idx = precisionCombo->findData(currentPrecision);
-    precisionCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 
     QSpinBox *levelASpin = new QSpinBox(tcdGroup);
     levelASpin->setRange(-1000, 1000);
     levelASpin->setSuffix(" mV");
-    levelASpin->setValue(m_monitorTab ? m_monitorTab->getParameter("levelA") : 0);
 
     QSpinBox *levelBSpin = new QSpinBox(tcdGroup);
     levelBSpin->setRange(-1000, 1000);
     levelBSpin->setSuffix(" mV");
-    levelBSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("levelB") : 0);
 
     QSpinBox *levelABSpin = new QSpinBox(tcdGroup);
     levelABSpin->setRange(-1000, 1000);
     levelABSpin->setSuffix(" mV");
-    levelABSpin->setValue(m_monitorTab ? m_monitorTab->getParameter("levelAB") : 0);
 
     tcdForm->addRow("设置温度:", tempSpin);
     tcdForm->addRow("灯丝A功率:", powerASpin);
@@ -350,37 +337,32 @@ void MainWindow::openSettings()
 
     // ================= 底部按钮 =================
     QHBoxLayout *buttonLayout = new QHBoxLayout;
-    QPushButton *saveBtn = new QPushButton("保存", &dlg);
-    QPushButton *openBtn = new QPushButton("打开", &dlg);
     QPushButton *applyBtn = new QPushButton("应用", &dlg);
     QPushButton *closeBtn = new QPushButton("关闭", &dlg);
     buttonLayout->addStretch();
-    buttonLayout->addWidget(saveBtn);
-    buttonLayout->addWidget(openBtn);
     buttonLayout->addWidget(applyBtn);
     buttonLayout->addWidget(closeBtn);
     mainLayout->addLayout(buttonLayout);
 
     connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
 
-    // ================= 从 QSettings 加载值 =================
+    // ================= 从 QSettings 读取参数 =================
     QSettings settings("MyCompany", "MicroGC");
-
-    flow1Spin->setValue(settings.value("global/flow1", flow1Spin->value()).toInt());
-    flow2Spin->setValue(settings.value("global/flow2", flow2Spin->value()).toInt());
-    collectPointsSpin->setValue(settings.value("global/collectPoints", collectPointsSpin->value()).toInt());
-    averageSpin->setValue(settings.value("global/averagePoints", averageSpin->value()).toInt());
-    tempSpin->setValue(settings.value("global/tcdTemp", tempSpin->value()).toInt());
-    powerASpin->setValue(settings.value("global/powerA", powerASpin->value()).toInt());
-    powerBSpin->setValue(settings.value("global/powerB", powerBSpin->value()).toInt());
-    int precisionVal = settings.value("global/precision", precisionCombo->currentData().toInt()).toInt();
-    int pidx = precisionCombo->findData(precisionVal);
+    flow1Spin->setValue(settings.value("global/flow1", 200).toInt());
+    flow2Spin->setValue(settings.value("global/flow2", 100).toInt());
+    collectPointsSpin->setValue(settings.value("global/collectPoints", 1000).toInt());
+    averageSpin->setValue(settings.value("global/averagePoints", 5).toInt());
+    tempSpin->setValue(settings.value("global/tcdTemp", 25).toInt());
+    powerASpin->setValue(settings.value("global/powerA", 50).toInt());
+    powerBSpin->setValue(settings.value("global/powerB", 50).toInt());
+    int prec = settings.value("global/precision", 1).toInt();
+    int pidx = precisionCombo->findData(prec);
     if (pidx >= 0) precisionCombo->setCurrentIndex(pidx);
-    levelASpin->setValue(settings.value("global/levelA", levelASpin->value()).toInt());
-    levelBSpin->setValue(settings.value("global/levelB", levelBSpin->value()).toInt());
-    levelABSpin->setValue(settings.value("global/levelAB", levelABSpin->value()).toInt());
+    levelASpin->setValue(settings.value("global/levelA", 0).toInt());
+    levelBSpin->setValue(settings.value("global/levelB", 0).toInt());
+    levelABSpin->setValue(settings.value("global/levelAB", 0).toInt());
 
-    // ================= 设置采集点数和均点的即时应用 =================
+    // ================= 内部“设置”按钮（采集点数、均点设置） =================
     connect(setCollectBtn, &QPushButton::clicked, this, [this, collectPointsSpin]() {
         if (m_monitorTab) m_monitorTab->setCollectPoints(collectPointsSpin->value());
         m_log->appendLog("设置", QString("采集点数设置为 %1").arg(collectPointsSpin->value()));
@@ -390,35 +372,11 @@ void MainWindow::openSettings()
         m_log->appendLog("设置", QString("均点设置设置为 %1").arg(averageSpin->value()));
     });
 
-    // ================= 应用按钮：应用并保存到 QSettings =================
+    // ================= 应用按钮：保存到 QSettings 并发送硬件命令 =================
     connect(applyBtn, &QPushButton::clicked, &dlg, [&]() {
-        if (m_monitorTab) {
-            m_monitorTab->setParameter("temperature", tempSpin->value());
-            m_monitorTab->setParameter("powerA", powerASpin->value());
-            m_monitorTab->setParameter("powerB", powerBSpin->value());
-            m_monitorTab->setParameter("levelA", levelASpin->value());
-            m_monitorTab->setParameter("levelB", levelBSpin->value());
-            m_monitorTab->setParameter("levelAB", levelABSpin->value());
-            m_monitorTab->setParameter("precision", precisionCombo->currentData().toInt());
-            m_monitorTab->applyGlobalParameters();
-        }
-
-        int flow1Val = flow1Spin->value();
-        int flow2Val = flow2Spin->value();
-        m_flow1Setpoint = flow1Val;
-        m_flow2Setpoint = flow2Val;
-
-        QTimer::singleShot(1500, this, [this, flow1Val, flow2Val]() {
-            if (m_comm) {
-                m_comm->setFlow1Setpoint(static_cast<quint16>(flow1Val));
-                m_comm->setFlow2Setpoint(static_cast<quint16>(flow2Val));
-            }
-        });
-
-        // 保存到 QSettings
-        QSettings settings("MyCompany", "MicroGC");
-        settings.setValue("global/flow1", flow1Val);
-        settings.setValue("global/flow2", flow2Val);
+        // 1. 保存到 QSettings
+        settings.setValue("global/flow1", flow1Spin->value());
+        settings.setValue("global/flow2", flow2Spin->value());
         settings.setValue("global/collectPoints", collectPointsSpin->value());
         settings.setValue("global/averagePoints", averageSpin->value());
         settings.setValue("global/tcdTemp", tempSpin->value());
@@ -430,48 +388,35 @@ void MainWindow::openSettings()
         settings.setValue("global/levelAB", levelABSpin->value());
         settings.sync();
 
+        // 2. 更新 MonitorTab 界面控件值（仅更新显示，不发送命令）
+        if (m_monitorTab) {
+            m_monitorTab->setParameter("temperature", tempSpin->value());
+            m_monitorTab->setParameter("powerA", powerASpin->value());
+            m_monitorTab->setParameter("powerB", powerBSpin->value());
+            m_monitorTab->setParameter("levelA", levelASpin->value());
+            m_monitorTab->setParameter("levelB", levelBSpin->value());
+            m_monitorTab->setParameter("levelAB", levelABSpin->value());
+            m_monitorTab->setParameter("precision", precisionCombo->currentData().toInt());
+            m_monitorTab->setCollectPoints(collectPointsSpin->value());
+            m_monitorTab->setAveragePoints(averageSpin->value());
+        }
+
+        // 3. 发送硬件命令（调用公有槽函数 applyGlobalParameters）
+        if (m_monitorTab) {
+            m_monitorTab->applyGlobalParameters();   // 该函数是 public，内部发送所有 TCD 设置命令
+        }
+
+        // 4. 发送流量控制器设定（延迟1.5秒，避免与TCD命令冲突）
+        int flow1Val = flow1Spin->value();
+        int flow2Val = flow2Spin->value();
+        QTimer::singleShot(1500, this, [this, flow1Val, flow2Val]() {
+            if (m_comm) {
+                m_comm->setFlow1Setpoint(static_cast<quint16>(flow1Val));
+                m_comm->setFlow2Setpoint(static_cast<quint16>(flow2Val));
+            }
+        });
+
         m_log->appendLog("设置", "全局参数已应用并保存");
-    });
-
-    // ================= 保存按钮：保存到 ini 文件 =================
-    connect(saveBtn, &QPushButton::clicked, &dlg, [&]() {
-        QString fileName = QFileDialog::getSaveFileName(&dlg, "保存全局参数", QString(), "配置文件 (*.ini)");
-        if (fileName.isEmpty()) return;
-        QSettings fileSettings(fileName, QSettings::IniFormat);
-        fileSettings.setValue("flow1", flow1Spin->value());
-        fileSettings.setValue("flow2", flow2Spin->value());
-        fileSettings.setValue("collectPoints", collectPointsSpin->value());
-        fileSettings.setValue("averagePoints", averageSpin->value());
-        fileSettings.setValue("temperature", tempSpin->value());
-        fileSettings.setValue("powerA", powerASpin->value());
-        fileSettings.setValue("powerB", powerBSpin->value());
-        fileSettings.setValue("precision", precisionCombo->currentData().toInt());
-        fileSettings.setValue("levelA", levelASpin->value());
-        fileSettings.setValue("levelB", levelBSpin->value());
-        fileSettings.setValue("levelAB", levelABSpin->value());
-        fileSettings.sync();
-        m_log->appendLog("设置", QString("全局参数已保存至 %1").arg(fileName));
-    });
-
-    // ================= 打开按钮：从 ini 文件加载 =================
-    connect(openBtn, &QPushButton::clicked, &dlg, [&]() {
-        QString fileName = QFileDialog::getOpenFileName(&dlg, "打开全局参数", QString(), "配置文件 (*.ini)");
-        if (fileName.isEmpty()) return;
-        QSettings fileSettings(fileName, QSettings::IniFormat);
-        flow1Spin->setValue(fileSettings.value("flow1", flow1Spin->value()).toInt());
-        flow2Spin->setValue(fileSettings.value("flow2", flow2Spin->value()).toInt());
-        collectPointsSpin->setValue(fileSettings.value("collectPoints", collectPointsSpin->value()).toInt());
-        averageSpin->setValue(fileSettings.value("averagePoints", averageSpin->value()).toInt());
-        tempSpin->setValue(fileSettings.value("temperature", tempSpin->value()).toInt());
-        powerASpin->setValue(fileSettings.value("powerA", powerASpin->value()).toInt());
-        powerBSpin->setValue(fileSettings.value("powerB", powerBSpin->value()).toInt());
-        int prec = fileSettings.value("precision", precisionCombo->currentData().toInt()).toInt();
-        int pidx = precisionCombo->findData(prec);
-        if (pidx >= 0) precisionCombo->setCurrentIndex(pidx);
-        levelASpin->setValue(fileSettings.value("levelA", levelASpin->value()).toInt());
-        levelBSpin->setValue(fileSettings.value("levelB", levelBSpin->value()).toInt());
-        levelABSpin->setValue(fileSettings.value("levelAB", levelABSpin->value()).toInt());
-        m_log->appendLog("设置", QString("全局参数已从 %1 加载").arg(fileName));
     });
 
     dlg.exec();

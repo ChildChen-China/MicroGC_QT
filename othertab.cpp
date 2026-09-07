@@ -277,10 +277,17 @@ void OtherTab::scrollPlots()
 void OtherTab::resetAllPlots()
 {
     m_autoScrollEnabled = true;
+
+    // 计算当前相对时间
+    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
+
     for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
         if (plot) {
-            plot->rescaleAxes();
+            // 设置 X 轴为最近 20 秒，使视图回到最新数据
+            plot->xAxis->setRange(timeSec - 20, timeSec);
+            // 自动调整 Y 轴以适应当前可见数据
+            plot->yAxis->rescale(true);
             plot->replot();
         }
     }

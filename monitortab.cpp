@@ -343,13 +343,6 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     row1->addStretch();
     basicLayout->addLayout(row1);
 
-    auto *row2 = new QHBoxLayout;
-    row2->addWidget(new QLabel("读取温度:", basicGroup));
-    m_tempValueLabel = new QLabel("-- ℃", basicGroup);
-    row2->addWidget(m_tempValueLabel);
-    row2->addStretch();
-    basicLayout->addLayout(row2);
-
     auto *row3 = new QHBoxLayout;
     row3->addWidget(new QLabel("TCD温度设置:", basicGroup));
     m_tempEdit = new QSpinBox(basicGroup);
@@ -652,9 +645,56 @@ void MonitorTab::checkSettingFeedback()
 void MonitorTab::refreshParameters()
 {
     if (!m_comm) return;
-    double temp = m_comm->tcdTemperature();
-    if (m_tempValueLabel) m_tempValueLabel->setText(QString("%1 ℃").arg(temp, 0, 'f', 2));
-    emit logMessage("TCD", "刷新参数（当前仅刷新温度）");
+
+    // 1. 读取 TCD 温度，并直接更新设置温度输入框（不再使用单独的显示标签）
+    m_comm->requestRegisterRead(0x0007, [this](quint16 value) {
+        if (m_tempEdit) {
+            // 假设温度寄存器为有符号16位，按实际协议调整
+            qint16 temp = static_cast<qint16>(value);
+            m_tempEdit->setValue(temp);
+        }
+    });
+
+    // 2. 读取灯丝功率 A
+    m_comm->requestRegisterRead(0x03E9, [this](quint16 value) {
+        if (m_powerAEdit)
+            m_powerAEdit->setValue(value);
+    });
+
+    // 3. 读取灯丝功率 B
+    m_comm->requestRegisterRead(0x03EA, [this](quint16 value) {
+        if (m_powerBEdit)
+            m_powerBEdit->setValue(value);
+    });
+
+    // 4. 读取 A 电平
+    m_comm->requestRegisterRead(0x03ED, [this](quint16 value) {
+        if (m_levelAEdit)
+            m_levelAEdit->setValue(static_cast<qint16>(value));
+    });
+
+    // 5. 读取 B 电平
+    m_comm->requestRegisterRead(0x03EE, [this](quint16 value) {
+        if (m_levelBEdit)
+            m_levelBEdit->setValue(static_cast<qint16>(value));
+    });
+
+    // 6. 读取 AB 电平
+    m_comm->requestRegisterRead(0x03EF, [this](quint16 value) {
+        if (m_levelABEdit)
+            m_levelABEdit->setValue(static_cast<qint16>(value));
+    });
+
+    // 7. 读取最小精度（寄存器值通常为 1、10、100）
+    m_comm->requestRegisterRead(0x03F1, [this](quint16 value) {
+        if (m_precisionEdit) {
+            int idx = m_precisionEdit->findData(static_cast<int>(value));
+            if (idx >= 0)
+                m_precisionEdit->setCurrentIndex(idx);
+        }
+    });
+
+    emit logMessage("TCD", "刷新参数：已请求读取所有设置值");
 }
 
 //==========================================================
