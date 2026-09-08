@@ -37,12 +37,48 @@ MainWindow::MainWindow(QWidget *parent)
     , m_otherTab(nullptr)
     , m_autoProcess(nullptr)
     , m_startStopAction(nullptr)
+    , m_tcdPowerAction(nullptr)
+    , m_tcdCheckTimer(nullptr)
+    , m_tcdPowered(false)
+    , m_tcdReplyReceived(false)
+    , m_checkActive(false)
 {
     setWindowTitle("MicroGC");
     resize(1500, 900);
 
     m_comm = new Communication(this);
     m_log = new LogWidget(this);
+
+    // ========== 创建 TCD 电源状态图标（更醒目） ==========
+    const int iconSize = 24;
+    QPixmap offPixmap(iconSize, iconSize);
+    offPixmap.fill(Qt::transparent);
+    QPainter painterOff(&offPixmap);
+    painterOff.setRenderHint(QPainter::Antialiasing);
+    painterOff.setBrush(QColor(80, 80, 80));   // 深灰色
+    painterOff.setPen(QPen(Qt::white, 2));     // 白色边框
+    painterOff.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
+    m_iconTcdOff = QIcon(offPixmap);
+
+    QPixmap onPixmap(iconSize, iconSize);
+    onPixmap.fill(Qt::transparent);
+    QPainter painterOn(&onPixmap);
+    painterOn.setRenderHint(QPainter::Antialiasing);
+    painterOn.setBrush(QColor(0, 230, 64));    // 亮绿色
+    painterOn.setPen(QPen(Qt::white, 2));      // 白色边框
+    painterOn.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
+    // 添加高光
+    painterOn.setBrush(Qt::white);
+    painterOn.setPen(Qt::NoPen);
+    painterOn.drawEllipse(8, 6, 6, 6);
+    m_iconTcdOn = QIcon(onPixmap);
+
+
+    // ========== 创建 TCD 电源状态检查定时器（每 10 秒） ==========
+    m_tcdCheckTimer = new QTimer(this);
+    m_tcdCheckTimer->setInterval(20000);
+    m_tcdCheckTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_tcdCheckTimer, &QTimer::timeout, this, &MainWindow::checkTcdPowerStatus);
 
     // 创建自动流程管理器
     m_autoProcess = new AutoProcessManager(m_comm, this);
@@ -51,7 +87,6 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_autoProcess, &AutoProcessManager::stateChanged, this, [this](const QString &state) {
         m_log->appendLog("自动流程", "状态: " + state);
-        // 更新开始/停止按钮文字
         if (m_startStopAction) {
             if (state == "空闲") {
                 m_startStopAction->setText("开始自动流程");
@@ -85,6 +120,9 @@ MainWindow::MainWindow(QWidget *parent)
     createActions();
     createTabs();
 
+    // 启动定时器
+    m_tcdCheckTimer->start();
+
     // 连接自动流程的数据记录开始/停止信号
     connect(m_autoProcess, &AutoProcessManager::saveDataTriggered,
             m_monitorTab, &MonitorTab::startAutoSave);
@@ -104,10 +142,17 @@ void MainWindow::createActions()
     QToolBar *toolbar = addToolBar("主工具栏");
     toolbar->setMovable(false);
     toolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    toolbar->setIconSize(QSize(24, 24));   // 设置图标尺寸，让指示灯更明显
 
+    // ========== 连接按钮 ==========
     QAction *connectAct = toolbar->addAction(style()->standardIcon(QStyle::SP_DriveNetIcon), "连接");
+    m_connectAction = connectAct;                 // 保存连接动作指针
+    m_iconConnectDefault = connectAct->icon();    // 保存默认图标
+
+    // ========== 数据处理按钮 ==========
     QAction *dataAct = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogContentsView), "数据处理");
 
+    // ========== 设置下拉按钮 ==========
     QToolButton *settingsBtn = new QToolButton(this);
     settingsBtn->setText("设置");
     settingsBtn->setIcon(style()->standardIcon(QStyle::SP_FileDialogInfoView));
@@ -128,10 +173,21 @@ void MainWindow::createActions()
     settingsBtn->setMenu(settingsMenu);
     toolbar->addWidget(settingsBtn);
 
-    // 开始/停止切换按钮
+    // ========== 开始/停止切换按钮 ==========
     m_startStopAction = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始自动流程");
+
+    // ========== 复位按钮 ==========
     QAction *resetAct = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), "复位");
 
+    // ========== TCD 电源状态指示灯（不可点击，仅显示状态） ==========
+    m_tcdPowerAction = toolbar->addAction(m_iconTcdOff, "TCD电源：未连接");
+    m_tcdPowerAction->setEnabled(false);
+    m_tcdPowerAction->setToolTip("TCD电源状态");
+
+    // 立即更新一次，确保初始文字和图标正确
+    updateTcdPowerIcon();
+
+    // ========== 连接信号槽 ==========
     connect(connectAct, &QAction::triggered, this, &MainWindow::openConnectionDialog);
     connect(dataAct, &QAction::triggered, this, &MainWindow::openDataProcessing);
     connect(globalSettingsAct, &QAction::triggered, this, &MainWindow::openSettings);
@@ -139,6 +195,7 @@ void MainWindow::createActions()
     connect(m_startStopAction, &QAction::triggered, this, &MainWindow::startStopAutoProcess);
     connect(resetAct, &QAction::triggered, this, &MainWindow::resetSystem);
 
+    // ========== 隐藏通道相关 ==========
     connect(hideAAct, &QAction::toggled, this, [this](bool checked) {
         if (m_monitorTab) m_monitorTab->setChannelAVisible(!checked);
     });
@@ -210,12 +267,37 @@ void MainWindow::onCommunicationConnected()
 {
     m_comm->startPolling();
     m_log->appendLog("通信", "已连接并开始轮询");
+
+    // 恢复连接按钮默认图标
+    if (m_connectAction) {
+        m_connectAction->setIcon(m_iconConnectDefault);
+    }
+
+    // 连接成功后立即检查 TCD 电源状态
+    checkTcdPowerStatus();
 }
 
 void MainWindow::onCommunicationDisconnected()
 {
     m_comm->stopPolling();
     m_log->appendLog("通信", "连接断开");
+
+    // 将连接按钮图标设置为黑色（自定义黑色网络断开图标）
+    if (m_connectAction) {
+        QPixmap blackIcon(32, 32);
+        blackIcon.fill(Qt::transparent);
+        QPainter painter(&blackIcon);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setBrush(Qt::black);
+        painter.setPen(Qt::black);
+        // 绘制一个简单的黑色圆点表示断开
+        painter.drawEllipse(8, 8, 16, 16);
+        m_connectAction->setIcon(QIcon(blackIcon));
+    }
+
+    // TCD 电源指示灯变黑
+    m_tcdPowered = false;
+    updateTcdPowerIcon();
 }
 
 void MainWindow::openConnectionDialog()
@@ -230,8 +312,8 @@ void MainWindow::openConnectionDialog()
     portSpin->setRange(1, 65535);
     portSpin->setValue(502);
 
-    form.addRow("PLC IP 地址:", ipEdit);
-    form.addRow("PLC 端口:", portSpin);
+    form.addRow("IP 地址:", ipEdit);
+    form.addRow("端口:", portSpin);
 
     QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     form.addRow(&buttons);
@@ -274,63 +356,71 @@ void MainWindow::openSettings()
     flowForm->addRow("流量1:", flow1Spin);
     flowForm->addRow("流量2:", flow2Spin);
 
-    QSpinBox *collectPointsSpin = new QSpinBox(flowGroup);
-    collectPointsSpin->setRange(100, 100000);
-    QPushButton *setCollectBtn = new QPushButton("设置", flowGroup);
-    QHBoxLayout *collectRow = new QHBoxLayout;
-    collectRow->addWidget(collectPointsSpin);
-    collectRow->addWidget(setCollectBtn);
-    flowForm->addRow("采集点数:", collectRow);
-
-    QSpinBox *averageSpin = new QSpinBox(flowGroup);
-    averageSpin->setRange(1, 1000);
-    QPushButton *setAverageBtn = new QPushButton("设置", flowGroup);
-    QHBoxLayout *averageRow = new QHBoxLayout;
-    averageRow->addWidget(averageSpin);
-    averageRow->addWidget(setAverageBtn);
-    flowForm->addRow("均点设置:", averageRow);
-
     mainLayout->addWidget(flowGroup);
 
     // ================= TCD 参数 =================
     QGroupBox *tcdGroup = new QGroupBox("TCD 参数", &dlg);
     QFormLayout *tcdForm = new QFormLayout(tcdGroup);
 
+    // 采集点数
+    QSpinBox *collectPointsSpin = new QSpinBox(tcdGroup);
+    collectPointsSpin->setRange(100, 100000);
+    QPushButton *setCollectBtn = new QPushButton("设置", tcdGroup);
+    QHBoxLayout *collectRow = new QHBoxLayout;
+    collectRow->addWidget(collectPointsSpin);
+    collectRow->addWidget(setCollectBtn);
+    tcdForm->addRow("采集点数:", collectRow);
+
+    // 均点设置
+    QSpinBox *averageSpin = new QSpinBox(tcdGroup);
+    averageSpin->setRange(1, 1000);
+    QPushButton *setAverageBtn = new QPushButton("设置", tcdGroup);
+    QHBoxLayout *averageRow = new QHBoxLayout;
+    averageRow->addWidget(averageSpin);
+    averageRow->addWidget(setAverageBtn);
+    tcdForm->addRow("均点设置:", averageRow);
+
+    // 温度设置
     QSpinBox *tempSpin = new QSpinBox(tcdGroup);
     tempSpin->setRange(-100, 500);
     tempSpin->setSuffix(" ℃");
+    tcdForm->addRow("设置温度:", tempSpin);
 
+    // 灯丝功率 A
     QSpinBox *powerASpin = new QSpinBox(tcdGroup);
     powerASpin->setRange(0, 100);
     powerASpin->setSuffix(" %");
+    tcdForm->addRow("灯丝A功率:", powerASpin);
 
+    // 灯丝功率 B
     QSpinBox *powerBSpin = new QSpinBox(tcdGroup);
     powerBSpin->setRange(0, 100);
     powerBSpin->setSuffix(" %");
+    tcdForm->addRow("灯丝B功率:", powerBSpin);
 
+    // 最小精度
     QComboBox *precisionCombo = new QComboBox(tcdGroup);
     precisionCombo->addItem("0.01", 1);
     precisionCombo->addItem("0.1", 10);
     precisionCombo->addItem("1", 100);
+    tcdForm->addRow("最小精度:", precisionCombo);
 
+    // A 电平
     QSpinBox *levelASpin = new QSpinBox(tcdGroup);
     levelASpin->setRange(-1000, 1000);
     levelASpin->setSuffix(" mV");
+    tcdForm->addRow("A电平(mV):", levelASpin);
 
+    // B 电平
     QSpinBox *levelBSpin = new QSpinBox(tcdGroup);
     levelBSpin->setRange(-1000, 1000);
     levelBSpin->setSuffix(" mV");
+    tcdForm->addRow("B电平(mV):", levelBSpin);
 
+    // AB 电平
     QSpinBox *levelABSpin = new QSpinBox(tcdGroup);
     levelABSpin->setRange(-1000, 1000);
     levelABSpin->setSuffix(" mV");
-
-    tcdForm->addRow("设置温度:", tempSpin);
-    tcdForm->addRow("灯丝A功率:", powerASpin);
-    tcdForm->addRow("灯丝B功率:", powerBSpin);
-    tcdForm->addRow("最小精度:", precisionCombo);
-    tcdForm->addRow("A电平(mV):", levelASpin);
-    tcdForm->addRow("B电平(mV):", levelBSpin);
     tcdForm->addRow("AB电平(mV):", levelABSpin);
 
     mainLayout->addWidget(tcdGroup);
@@ -403,7 +493,7 @@ void MainWindow::openSettings()
 
         // 3. 发送硬件命令（调用公有槽函数 applyGlobalParameters）
         if (m_monitorTab) {
-            m_monitorTab->applyGlobalParameters();   // 该函数是 public，内部发送所有 TCD 设置命令
+            m_monitorTab->applyGlobalParameters();   // 发送TCD相关设置命令
         }
 
         // 4. 发送流量控制器设定（延迟1.5秒，避免与TCD命令冲突）
@@ -561,4 +651,45 @@ void MainWindow::resetSystem()
 void MainWindow::toggleLogVisible(bool visible)
 {
     if (m_log) m_log->setVisible(!visible);
+}
+
+void MainWindow::checkTcdPowerStatus()
+{
+    if (!m_comm || !m_comm->isConnected()) {
+        m_tcdPowered = false;
+        updateTcdPowerIcon();
+        return;
+    }
+
+    m_checkActive = true;
+    m_tcdReplyReceived = false;
+
+    m_comm->requestRegisterRead(0x03E8, [this](quint16) {
+        if (m_checkActive) {
+            m_checkActive = false;
+            m_tcdPowered = true;
+            updateTcdPowerIcon();
+        }
+    });
+
+    QTimer::singleShot(300, this, [this]() {
+        if (m_checkActive) {
+            m_checkActive = false;
+            m_tcdPowered = false;
+            updateTcdPowerIcon();
+        }
+    });
+}
+
+void MainWindow::updateTcdPowerIcon()
+{
+    if (m_tcdPowerAction) {
+        if (m_tcdPowered) {
+            m_tcdPowerAction->setIcon(m_iconTcdOn);
+            m_tcdPowerAction->setText("TCD电源：已通电");
+        } else {
+            m_tcdPowerAction->setIcon(m_iconTcdOff);
+            m_tcdPowerAction->setText("TCD电源：未连接");
+        }
+    }
 }

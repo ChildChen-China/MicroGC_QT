@@ -217,6 +217,11 @@ MonitorTab::MonitorTab(QWidget *parent)
     connect(m_feedbackTimer, &QTimer::timeout, this, &MonitorTab::checkSettingFeedback);
     m_feedbackTimer->start();
 
+    // 创建灯丝功率安全检查定时器（单次，300ms超时）
+    m_powerCheckTimer = new QTimer(this);
+    m_powerCheckTimer->setSingleShot(true);
+    connect(m_powerCheckTimer, &QTimer::timeout, this, &MonitorTab::onPowerCheckTimeout);
+
     // 绘图刷新定时器（50ms）
     m_plotTimer->setInterval(50);
     connect(m_plotTimer, &QTimer::timeout, this, [this]() { updatePlots(false); });
@@ -579,12 +584,86 @@ void MonitorTab::setParameter(const QString &key, int value)
 // 设置命令发送与验证
 //==========================================================
 void MonitorTab::setTemperature() { if (m_comm) { int val = m_tempEdit->value(); m_comm->setTcdTemperature(val); m_pendingTemp = val; m_hasPendingTemp = true; emit logMessage("TCD", QString("TCD温度设置已发送: %1 ℃").arg(val)); } }
-void MonitorTab::setPowerA()     { if (m_comm) { int val = m_powerAEdit->value(); m_comm->setLampPowerA(val); m_pendingPowerA = val; m_hasPendingPowerA = true; emit logMessage("TCD", QString("灯丝功率A设置已发送: %1 %").arg(val)); } }
-void MonitorTab::setPowerB()     { if (m_comm) { int val = m_powerBEdit->value(); m_comm->setLampPowerB(val); m_pendingPowerB = val; m_hasPendingPowerB = true; emit logMessage("TCD", QString("灯丝功率B设置已发送: %1 %").arg(val)); } }
+
+void MonitorTab::setPowerA()
+{
+    if (!m_comm) return;
+    int val = m_powerAEdit->value();
+    checkTcdPoweredBeforeSetPower(true, static_cast<quint16>(val));
+}
+
+void MonitorTab::setPowerB()
+{
+    if (!m_comm) return;
+    int val = m_powerBEdit->value();
+    checkTcdPoweredBeforeSetPower(false, static_cast<quint16>(val));
+}
+
+
 void MonitorTab::setLevelA()     { if (m_comm) { int val = m_levelAEdit->value(); m_comm->setChannelAVoltage(val); m_pendingLevelA = val; m_hasPendingLevelA = true; emit logMessage("TCD", QString("A电平设置已发送: %1 mV").arg(val)); } }
 void MonitorTab::setLevelB()     { if (m_comm) { int val = m_levelBEdit->value(); m_comm->setChannelBVoltage(val); m_pendingLevelB = val; m_hasPendingLevelB = true; emit logMessage("TCD", QString("B电平设置已发送: %1 mV").arg(val)); } }
 void MonitorTab::setLevelAB()    { if (m_comm) { int val = m_levelABEdit->value(); m_comm->setChannelABVoltage(val); m_pendingLevelAB = val; m_hasPendingLevelAB = true; emit logMessage("TCD", QString("AB电平设置已发送: %1 mV").arg(val)); } }
 void MonitorTab::setPrecision()  { if (m_comm) { int val = m_precisionEdit->currentData().toInt(); m_comm->setPrecision(val); m_pendingPrecision = val; m_hasPendingPrecision = true; emit logMessage("TCD", QString("最小精度设置已发送: 寄存器值 %1").arg(val)); } }
+
+void MonitorTab::checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value)
+{
+    if (m_powerCheckInProgress) {
+        emit logMessage("TCD", "正在检查TCD通电状态，请稍候...");
+        return;
+    }
+
+    m_powerCheckInProgress = true;
+    m_powerCheckIsA = isPowerA;
+    m_powerCheckAttempts = 0;
+    m_powerCheckReplyReceived = false;
+
+    // 第一次读取 TCD 温度设置寄存器（0x03E8）
+    m_comm->requestRegisterRead(0x03E8, [this](quint16) {
+        m_powerCheckReplyReceived = true;
+    });
+
+    // 启动超时定时器（300ms后检查）
+    m_powerCheckTimer->start(300);
+}
+
+void MonitorTab::onPowerCheckTimeout()
+{
+    m_powerCheckAttempts++;
+
+    if (m_powerCheckReplyReceived) {
+        // 有回复，说明 TCD 已通电，禁止设置灯丝功率
+        m_powerCheckInProgress = false;
+        m_powerCheckTimer->stop();
+        emit logMessage("TCD", "TCD已通电，禁止设置灯丝功率！");
+        return;
+    }
+
+    if (m_powerCheckAttempts < 2) {
+        // 第一次无回复，进行第二次读取
+        m_powerCheckReplyReceived = false;
+        m_comm->requestRegisterRead(0x03E8, [this](quint16) {
+            m_powerCheckReplyReceived = true;
+        });
+        m_powerCheckTimer->start(300);
+    } else {
+        // 两次均无回复，允许设置功率
+        m_powerCheckInProgress = false;
+        m_powerCheckTimer->stop();
+
+        quint16 val = (m_powerCheckIsA) ? m_powerAEdit->value() : m_powerBEdit->value();
+        if (m_powerCheckIsA) {
+            m_comm->setLampPowerA(val);
+            m_pendingPowerA = val;
+            m_hasPendingPowerA = true;
+            emit logMessage("TCD", QString("灯丝功率A设置已发送: %1 %").arg(val));
+        } else {
+            m_comm->setLampPowerB(val);
+            m_pendingPowerB = val;
+            m_hasPendingPowerB = true;
+            emit logMessage("TCD", QString("灯丝功率B设置已发送: %1 %").arg(val));
+        }
+    }
+}
 
 void MonitorTab::applyGlobalParameters()
 {

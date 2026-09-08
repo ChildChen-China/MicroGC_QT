@@ -3,6 +3,8 @@
 
 #include <QMainWindow>
 #include <QModbusTcpClient>
+#include <QPainter>
+#include <QPixmap>
 #include "autoprocess.h"
 
 class QTabWidget;
@@ -46,6 +48,21 @@ private:
 
     int m_flow1Setpoint = 200;
     int m_flow2Setpoint = 100;
+
+    // TCD 电源状态指示
+    QAction *m_tcdPowerAction = nullptr;
+    QTimer *m_tcdCheckTimer = nullptr;
+    bool m_tcdPowered = false;
+    bool m_tcdReplyReceived = false;
+    bool m_checkActive = false;
+    QIcon m_iconTcdOn;
+    QIcon m_iconTcdOff;
+
+    QAction *m_connectAction = nullptr;   // 连接动作指针
+    QIcon m_iconConnectDefault;           // 默认连接图标
+
+    void updateTcdPowerIcon();
+    void checkTcdPowerStatus();
 };
 
 #endif // MAINWINDOW_H

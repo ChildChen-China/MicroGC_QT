@@ -23,8 +23,10 @@ Communication::Communication(QObject *parent)
     , m_tcdTemperature(0)
     , m_valveState(0)
 {
-    m_fastTimer->setInterval(50);    // TCD电压快速读取
-    m_slowTimer->setInterval(1000);  // 慢速参数（温度、流量、压力）
+    // 快速定时器：精确定时器类型
+    m_fastTimer->setInterval(40);
+    m_fastTimer->setTimerType(Qt::PreciseTimer);
+    m_slowTimer->setInterval(1000);  // 慢速保持不变
 
     connect(m_fastTimer, &QTimer::timeout, this, &Communication::pollFastData);
     connect(m_slowTimer, &QTimer::timeout, this, &Communication::pollSlowData);
@@ -46,8 +48,8 @@ void Communication::connectToDevice(const QString &ip, quint16 port)
     m_fastClient = new QModbusTcpClient(this);
     m_fastClient->setConnectionParameter(QModbusDevice::NetworkAddressParameter, ip);
     m_fastClient->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
-    m_fastClient->setTimeout(2000);
-    m_fastClient->setNumberOfRetries(3);
+    m_fastClient->setTimeout(500);
+    m_fastClient->setNumberOfRetries(2);
     connect(m_fastClient, &QModbusTcpClient::stateChanged, this, &Communication::onFastStateChanged);
     connect(m_fastClient, &QModbusTcpClient::errorOccurred, this, &Communication::onFastErrorOccurred);
 
@@ -59,8 +61,8 @@ void Communication::connectToDevice(const QString &ip, quint16 port)
     m_slowClient = new QModbusTcpClient(this);
     m_slowClient->setConnectionParameter(QModbusDevice::NetworkAddressParameter, ip);
     m_slowClient->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
-    m_slowClient->setTimeout(5000);   // 慢速客户端给予更长超时
-    m_slowClient->setNumberOfRetries(3);
+    m_slowClient->setTimeout(2000);   // 慢速客户端给予更长超时
+    m_slowClient->setNumberOfRetries(1);
     connect(m_slowClient, &QModbusTcpClient::stateChanged, this, &Communication::onSlowStateChanged);
     connect(m_slowClient, &QModbusTcpClient::errorOccurred, this, &Communication::onSlowErrorOccurred);
 
@@ -243,6 +245,10 @@ void Communication::processSlowQueue()
     SlowRequest req = m_slowQueue.dequeue();
 
     if (req.type == SlowRequest::Read) {
+
+        qDebug() << "[慢速队列发送] 时间:" << QDateTime::currentDateTime().toString("hh:mm:ss.zzz")
+            << " 地址:0x" << QString::number(req.address,16)
+            << " 队列剩余:" << m_slowQueue.size();
         QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, req.address, 1);
         QModbusReply *reply = m_slowClient->sendReadRequest(unit, 1);
         if (!reply) {
@@ -340,6 +346,16 @@ void Communication::setFlow2Setpoint(quint16 value) { writeRegister(m_slowClient
 //-------------------------------------------------------------
 void Communication::requestRegisterRead(quint16 address, std::function<void(quint16)> callback)
 {
+    static qint64 lastReadTime = 0;
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 interval = (lastReadTime == 0) ? 0 : (now - lastReadTime);
+    lastReadTime = now;
+
+    qDebug() << "[慢速读取入队] 时间:" << QDateTime::currentDateTime().toString("hh:mm:ss.zzz")
+             << " 地址:0x" << QString::number(address,16)
+             << " 距上次读取:" << interval << "ms"
+             << " 当前队列长度:" << m_slowQueue.size();
+
     enqueueSlowRead(address, callback);
 }
 

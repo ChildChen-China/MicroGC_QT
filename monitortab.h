@@ -111,6 +111,8 @@ private slots:
     void updateDisplayLength();
     void checkSettingFeedback();
 
+    void onPowerCheckTimeout();
+
 private:
     void setupControlPanel(QVBoxLayout *layout);
     void setupSignalPanel(QVBoxLayout *layout);
@@ -173,6 +175,15 @@ private:
 
     // ---- 绘图刷新定时器 ----
     QTimer *m_plotTimer;
+
+    void checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value);
+
+    // 灯丝功率安全检查相关
+    QTimer *m_powerCheckTimer;
+    bool m_powerCheckInProgress = false;
+    bool m_powerCheckIsA = false;
+    int m_powerCheckAttempts = 0;
+    bool m_powerCheckReplyReceived = false;
 };
 
 #endif // MONITORTAB_H
