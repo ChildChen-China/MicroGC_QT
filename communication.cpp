@@ -22,6 +22,7 @@ Communication::Communication(QObject *parent)
     , m_tcdVoltageAB(0)
     , m_tcdTemperature(0)
     , m_valveState(0)
+    , m_tcdPowered(false)
 {
     // 快速定时器：精确定时器类型
     m_fastTimer->setInterval(40);
@@ -36,6 +37,11 @@ Communication::~Communication()
 {
     stopPolling();
     disconnectDevice();
+}
+
+void Communication::setTcdPowered(bool powered)
+{
+    m_tcdPowered = powered;
 }
 
 void Communication::connectToDevice(const QString &ip, quint16 port)
@@ -115,6 +121,10 @@ void Communication::stopPolling()
 //-------------------------------------------------------------
 void Communication::pollFastData()
 {
+    // TCD 电源关闭时，不发送快速轮询请求
+    if (!m_tcdPowered)
+        return;
+
     if (!m_fastClient || !m_fastConnected)
         return;
     if (m_fastClient->state() != QModbusDevice::ConnectedState)
@@ -155,9 +165,6 @@ void Communication::processFastResponse(const QModbusDataUnit &unit)
     m_tcdVoltageAB = static_cast<qint16>(unit.value(2));
 }
 
-//-------------------------------------------------------------
-// 慢速轮询（合并读取 0x0000~0x0007）
-//-------------------------------------------------------------
 void Communication::pollSlowData()
 {
     if (!m_slowClient || !m_slowConnected)
@@ -165,33 +172,104 @@ void Communication::pollSlowData()
     if (m_slowClient->state() != QModbusDevice::ConnectedState)
         return;
 
-    QModbusDataUnit unit = slowReadRequest();
-    QModbusReply *reply = m_slowClient->sendReadRequest(unit, 1);
-    if (!reply) {
-        emit statusMessage("慢速读取请求发送失败");
-        return;
-    }
-
-    connect(reply, &QModbusReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() == QModbusDevice::NoError) {
-            processSlowResponse(reply->result());
-            emit slowDataUpdated();
-        } else {
-            emit statusMessage(QString("慢速读取错误: %1").arg(reply->errorString()));
+    if (m_tcdPowered) {
+        // TCD 电源开启：读取 0x0000~0x0003（柱温箱、流量1、流量2、压力）
+        QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, 0, 4);
+        QModbusReply *reply = m_slowClient->sendReadRequest(unit, 1);
+        if (!reply) {
+            emit statusMessage("慢速读取请求发送失败");
+            return;
         }
-    });
+
+        connect(reply, &QModbusReply::finished, this, [this, reply]() {
+            reply->deleteLater();
+            if (reply->error() == QModbusDevice::NoError) {
+                processSlowResponse(reply->result());
+
+                // 继续读取 TCD 温度（0x0007）
+                QModbusDataUnit tcdUnit(QModbusDataUnit::HoldingRegisters, 0x0007, 1);
+                QModbusReply *tcdReply = m_slowClient->sendReadRequest(tcdUnit, 1);
+                if (!tcdReply) {
+                    emit statusMessage("慢速读取TCD温度请求发送失败");
+                    emit slowDataUpdated();
+                    return;
+                }
+
+                connect(tcdReply, &QModbusReply::finished, this, [this, tcdReply]() {
+                    tcdReply->deleteLater();
+                    if (tcdReply->error() == QModbusDevice::NoError) {
+                        const QModbusDataUnit result = tcdReply->result();
+                        if (result.valueCount() > 0) {
+                            QMutexLocker locker(&m_mutex);
+                            m_tcdTemperature = static_cast<qint16>(result.value(0));
+                        }
+                    } else {
+                        emit statusMessage(QString("慢速读取TCD温度错误: %1").arg(tcdReply->errorString()));
+                    }
+                    emit slowDataUpdated();
+                });
+            } else {
+                emit statusMessage(QString("慢速读取错误: %1").arg(reply->errorString()));
+            }
+        });
+    } else {
+        // TCD 电源关闭：只读取柱温箱（0x0000）和压力（0x0003）
+        // 先读取柱温箱
+        QModbusDataUnit ovenUnit(QModbusDataUnit::HoldingRegisters, 0x0000, 1);
+        QModbusReply *ovenReply = m_slowClient->sendReadRequest(ovenUnit, 1);
+        if (!ovenReply) {
+            emit statusMessage("读取柱温箱请求发送失败");
+            return;
+        }
+
+        connect(ovenReply, &QModbusReply::finished, this, [this, ovenReply]() {
+            ovenReply->deleteLater();
+            if (ovenReply->error() == QModbusDevice::NoError) {
+                const QModbusDataUnit result = ovenReply->result();
+                if (result.valueCount() > 0) {
+                    QMutexLocker locker(&m_mutex);
+                    m_columnOven1Temp = result.value(0);
+                }
+            } else {
+                emit statusMessage(QString("读取柱温箱错误: %1").arg(ovenReply->errorString()));
+            }
+
+            // 再读取压力
+            QModbusDataUnit pressUnit(QModbusDataUnit::HoldingRegisters, 0x0003, 1);
+            QModbusReply *pressReply = m_slowClient->sendReadRequest(pressUnit, 1);
+            if (!pressReply) {
+                emit statusMessage("读取压力请求发送失败");
+                emit slowDataUpdated();
+                return;
+            }
+
+            connect(pressReply, &QModbusReply::finished, this, [this, pressReply]() {
+                pressReply->deleteLater();
+                if (pressReply->error() == QModbusDevice::NoError) {
+                    const QModbusDataUnit result = pressReply->result();
+                    if (result.valueCount() > 0) {
+                        QMutexLocker locker(&m_mutex);
+                        m_pressure = static_cast<qint16>(result.value(0));
+                    }
+                } else {
+                    emit statusMessage(QString("读取压力错误: %1").arg(pressReply->errorString()));
+                }
+                emit slowDataUpdated();
+            });
+        });
+    }
 }
 
 QModbusDataUnit Communication::slowReadRequest() const
 {
-    QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, 0, 8);
+    // 只读取非 TCD 参数：柱温箱温度、流量1、流量2、压力
+    QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, 0, 4);
     return unit;
 }
 
 void Communication::processSlowResponse(const QModbusDataUnit &unit)
 {
-    if (unit.valueCount() < 8)
+    if (unit.valueCount() < 4)
         return;
 
     QMutexLocker locker(&m_mutex);
@@ -199,7 +277,7 @@ void Communication::processSlowResponse(const QModbusDataUnit &unit)
     m_flow1 = unit.value(1);
     m_flow2 = unit.value(2);
     m_pressure = static_cast<qint16>(unit.value(3));
-    m_tcdTemperature = static_cast<qint16>(unit.value(7));
+    // TCD 温度已由单独的读取更新
 }
 
 //-------------------------------------------------------------

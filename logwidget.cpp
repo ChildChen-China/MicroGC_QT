@@ -36,8 +36,16 @@ LogWidget::LogWidget(QWidget *parent)
     }
 
     // 打开今天的日志文件
-    QString today = QDate::currentDate().toString("yyyyMMdd");
     openLogFile(QDate::currentDate(), 0);
+
+    // ========== 写入本次启动的分隔标识 ==========
+    if (m_logFile.isOpen()) {
+        QString startTime = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
+        m_logStream << "========================================\n";
+        m_logStream << QString("程序启动时间: %1\n").arg(startTime);
+        m_logStream << "========================================\n";
+        m_logStream.flush();
+    }
 }
 
 LogWidget::~LogWidget()
@@ -52,17 +60,22 @@ void LogWidget::appendLog(const QString &type, const QString &event)
 {
     QString time = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
 
-    // 更新界面表格
+    // ========== 更新界面表格 ==========
     int row = 0;
     m_table->insertRow(row);
     m_table->setItem(row, 0, new QTableWidgetItem(time));
     m_table->setItem(row, 1, new QTableWidgetItem(type));
     m_table->setItem(row, 2, new QTableWidgetItem(event));
 
-    // 写入文件
+    // 限制表格显示行数，超出时删除最旧的行
+    while (m_table->rowCount() > MAX_DISPLAY_ROWS) {
+        m_table->removeRow(m_table->rowCount() - 1);
+    }
+
+    // ========== 写入文件（保留所有日志） ==========
     if (m_logFile.isOpen()) {
         m_logStream << QString("[%1] [%2] %3\n").arg(time, type, event);
-        m_logStream.flush();  // 确保立即写入磁盘，避免丢失
+        m_logStream.flush();
         m_currentFileLines++;
 
         // 检查是否需要切换文件（跨天或行数超限）
@@ -92,9 +105,7 @@ void LogWidget::openLogFile(const QDate &date, int suffix)
     if (m_logFile.open(QIODevice::Append | QIODevice::Text)) {
         m_logStream.setDevice(&m_logFile);
         m_currentDate = dateStr;
-        m_currentFileLines = 0;  // 打开新文件时重置行计数
-        // 如果文件已存在且非空，需要先统计现有行数，但此处简化处理：直接以0开始计数，
-        // 可能导致行数超过10万才切换，但通常可接受。如需精确计数可自行扩展。
+        m_currentFileLines = 0;
     } else {
         qWarning() << "无法打开日志文件:" << fileName;
         m_logStream.setDevice(nullptr);
@@ -113,7 +124,6 @@ void LogWidget::checkAndRotateFile()
     // 检查行数是否超过10万
     const int maxLines = 100000;
     if (m_currentFileLines >= maxLines) {
-        // 查找当前日期的下一个可用后缀
         QString dateStr = QDate::currentDate().toString("yyyyMMdd");
         int suffix = 1;
         while (QFile::exists(QString("log/%1_%2.txt").arg(dateStr).arg(suffix))) {

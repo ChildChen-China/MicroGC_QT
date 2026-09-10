@@ -668,8 +668,6 @@ void MonitorTab::onPowerCheckTimeout()
 void MonitorTab::applyGlobalParameters()
 {
     QTimer::singleShot(0,    this, [this]() { setTemperature(); });
-    QTimer::singleShot(200,  this, [this]() { setPowerA(); });
-    QTimer::singleShot(400,  this, [this]() { setPowerB(); });
     QTimer::singleShot(600,  this, [this]() { setLevelA(); });
     QTimer::singleShot(800,  this, [this]() { setLevelB(); });
     QTimer::singleShot(1000, this, [this]() { setLevelAB(); });

@@ -18,7 +18,7 @@ public:
 
     void connectToDevice(const QString &ip, quint16 port);
     void disconnectDevice();
-
+    void setTcdPowered(bool powered);
     void startPolling();
     void stopPolling();
 
@@ -107,7 +107,7 @@ private:
     // 慢速请求队列
     QQueue<SlowRequest> m_slowQueue;
     bool m_slowBusy;
-
+    bool m_tcdPowered = false;
     // 数据缓存
     double m_columnOven1Temp;
     double m_flow1;

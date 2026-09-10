@@ -4,7 +4,7 @@
 #include <QWidget>
 #include <QFile>
 #include <QTextStream>
-#include <QDateTime>
+#include <QDate>
 
 class QTableWidget;
 
@@ -26,8 +26,10 @@ private:
     QTableWidget *m_table;
     QFile m_logFile;
     QTextStream m_logStream;
-    QString m_currentDate;      // 当前文件对应的日期 (yyyyMMdd)
-    int m_currentFileLines = 0; // 当前文件已写入的行数
+    QString m_currentDate;
+    int m_currentFileLines = 0;
+
+    static const int MAX_DISPLAY_ROWS = 2000;   // 表格最多显示行数
 };
 
 #endif // LOGWIDGET_H
