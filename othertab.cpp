@@ -50,7 +50,6 @@ OtherTab::OtherTab(QWidget *parent)
     mainLayout->addLayout(setupFirstRow());
     mainLayout->addLayout(setupPlotLayout(), 1);
 
-    // 默认全部显示
     m_chkColumnOven->setChecked(true);
     m_chkPressure->setChecked(true);
     m_chkTcdTemp->setChecked(true);
@@ -58,14 +57,12 @@ OtherTab::OtherTab(QWidget *parent)
     m_chkFlow2->setChecked(true);
     toggleSensorVisible();
 
-    // 安装事件过滤器
     QList<InteractivePlot*> plots = {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                       m_plotFlow1, m_plotFlow2};
     for (InteractivePlot *plot : plots) {
         if (plot) plot->installEventFilter(this);
     }
 
-    // 滚动定时器
     m_scrollTimer->setInterval(100);
     connect(m_scrollTimer, &QTimer::timeout, this, &OtherTab::scrollPlots);
     m_scrollTimer->start();
@@ -88,7 +85,7 @@ QHBoxLayout* OtherTab::setupFirstRow()
 
     m_chkColumnOven = new QCheckBox("柱温箱", this);
     m_chkPressure = new QCheckBox("压力传感器", this);
-    m_chkTcdTemp = new QCheckBox("TCD温度", this);
+    m_chkTcdTemp = new QCheckBox("TCD", this);
     m_chkFlow1 = new QCheckBox("流量器1", this);
     m_chkFlow2 = new QCheckBox("流量器2", this);
 
@@ -145,7 +142,7 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     m_plotLayout = new QVBoxLayout;
     m_plotLayout->setSpacing(6);
 
-    // 第一行水平布局
+    // 第一行
     m_topRowLayout = new QHBoxLayout;
     m_topRowLayout->setSpacing(6);
 
@@ -162,7 +159,7 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     coLayout->addWidget(m_plotColumnOven);
     m_topRowLayout->addWidget(m_groupColumnOven, 1);
 
-    // 压力传感器
+    // 压力
     m_groupPressure = new QGroupBox("压力传感器", this);
     m_groupPressure->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *pLayout = new QVBoxLayout(m_groupPressure);
@@ -175,20 +172,34 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     pLayout->addWidget(m_plotPressure);
     m_topRowLayout->addWidget(m_groupPressure, 1);
 
-    // TCD温度
-    m_groupTcdTemp = new QGroupBox("TCD温度", this);
+    // TCD（三条曲线：FA功率、FB功率、测量温度LL）
+    m_groupTcdTemp = new QGroupBox("TCD", this);
     m_groupTcdTemp->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *tcdLayout = new QVBoxLayout(m_groupTcdTemp);
     m_plotTcdTemp = new InteractivePlot(m_groupTcdTemp);
+
     m_plotTcdTemp->addGraph();
-    m_plotTcdTemp->graph(0)->setPen(QPen(Qt::darkYellow));
+    m_plotTcdTemp->graph(0)->setName("FA功率");
+    m_plotTcdTemp->graph(0)->setPen(QPen(Qt::red));
+
+    m_plotTcdTemp->addGraph();
+    m_plotTcdTemp->graph(1)->setName("FB功率");
+    m_plotTcdTemp->graph(1)->setPen(QPen(Qt::blue));
+
+    m_plotTcdTemp->addGraph();
+    m_plotTcdTemp->graph(2)->setName("测量温度LL");
+    m_plotTcdTemp->graph(2)->setPen(QPen(Qt::darkYellow));
+
     m_plotTcdTemp->xAxis->setLabel("Time(s)");
-    m_plotTcdTemp->yAxis->setLabel("Temperature(°C)");
-    m_plotTcdTemp->setCrosshairName("TCD温度");
+    m_plotTcdTemp->yAxis->setLabel("Value");
+    m_plotTcdTemp->setCrosshairName("TCD");
+    // 图例右上角
+    m_plotTcdTemp->legend->setVisible(true);
+    m_plotTcdTemp->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
     tcdLayout->addWidget(m_plotTcdTemp);
     m_topRowLayout->addWidget(m_groupTcdTemp, 1);
 
-    // 第二行水平布局
+    // 第二行
     m_bottomRowLayout = new QHBoxLayout;
     m_bottomRowLayout->setSpacing(6);
 
@@ -200,7 +211,7 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     m_plotFlow1->addGraph();
     m_plotFlow1->graph(0)->setPen(QPen(Qt::magenta));
     m_plotFlow1->xAxis->setLabel("Time(s)");
-    m_plotFlow1->yAxis->setLabel("Flow(ml/min)");
+    m_plotFlow1->yAxis->setLabel("Flow");
     m_plotFlow1->setCrosshairName("流量器1");
     f1Layout->addWidget(m_plotFlow1);
     m_bottomRowLayout->addWidget(m_groupFlow1, 1);
@@ -213,7 +224,7 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     m_plotFlow2->addGraph();
     m_plotFlow2->graph(0)->setPen(QPen(Qt::cyan));
     m_plotFlow2->xAxis->setLabel("Time(s)");
-    m_plotFlow2->yAxis->setLabel("Flow(ml/min)");
+    m_plotFlow2->yAxis->setLabel("Flow");
     m_plotFlow2->setCrosshairName("流量器2");
     f2Layout->addWidget(m_plotFlow2);
     m_bottomRowLayout->addWidget(m_groupFlow2, 1);
@@ -233,24 +244,37 @@ void OtherTab::updateFromComm()
 
     double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
 
-    auto updatePlot = [this, timeSec](InteractivePlot* plot, double value, int maxPoints) {
-        if (!plot || plot->graphCount() == 0) return;
-        QCPGraph *graph = plot->graph(0);
+    auto updatePlot = [this, timeSec](InteractivePlot* plot, int graphIdx, double value, int maxPoints) {
+        if (!plot || plot->graphCount() <= graphIdx) return;
+        QCPGraph *graph = plot->graph(graphIdx);
         graph->addData(timeSec, value);
         if (maxPoints > 0 && graph->dataCount() > maxPoints) {
             int excess = graph->dataCount() - maxPoints;
             for (int i = 0; i < excess; ++i)
                 graph->data()->remove(graph->data()->begin()->key);
         }
-        if (m_autoScrollEnabled)
-            plot->yAxis->rescale(true);
     };
 
-    updatePlot(m_plotColumnOven, m_comm->columnOven1Temp(), m_columnOvenLength);
-    updatePlot(m_plotPressure, m_comm->pressure(), m_pressureLength);
-    updatePlot(m_plotTcdTemp, m_comm->tcdTemperature(), m_tcdTempLength);
-    updatePlot(m_plotFlow1, m_comm->flow1(), m_flow1Length);
-    updatePlot(m_plotFlow2, m_comm->flow2(), m_flow2Length);
+    // 柱温箱
+    updatePlot(m_plotColumnOven, 0, m_comm->columnOven1Temp(), m_columnOvenLength);
+    // 压力
+    updatePlot(m_plotPressure, 0, m_comm->pressure(), m_pressureLength);
+    // TCD 三条曲线
+    updatePlot(m_plotTcdTemp, 0, m_comm->tcdPowerFA(), m_tcdTempLength);
+    updatePlot(m_plotTcdTemp, 1, m_comm->tcdPowerFB(), m_tcdTempLength);
+    updatePlot(m_plotTcdTemp, 2, m_comm->tcdMeasureTemp(), m_tcdTempLength);
+    // 流量
+    updatePlot(m_plotFlow1, 0, m_comm->flow1(), m_flow1Length);
+    updatePlot(m_plotFlow2, 0, m_comm->flow2(), m_flow2Length);
+
+    // 自动调整 Y 轴
+    if (m_autoScrollEnabled) {
+        if (m_plotColumnOven->isVisible()) m_plotColumnOven->yAxis->rescale(true);
+        if (m_plotPressure->isVisible()) m_plotPressure->yAxis->rescale(true);
+        if (m_plotTcdTemp->isVisible()) m_plotTcdTemp->yAxis->rescale(true);
+        if (m_plotFlow1->isVisible()) m_plotFlow1->yAxis->rescale(true);
+        if (m_plotFlow2->isVisible()) m_plotFlow2->yAxis->rescale(true);
+    }
 
     for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
@@ -277,16 +301,11 @@ void OtherTab::scrollPlots()
 void OtherTab::resetAllPlots()
 {
     m_autoScrollEnabled = true;
-
-    // 计算当前相对时间
     double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
-
     for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
                                   m_plotFlow1, m_plotFlow2}) {
         if (plot) {
-            // 设置 X 轴为最近 20 秒，使视图回到最新数据
             plot->xAxis->setRange(timeSec - 20, timeSec);
-            // 自动调整 Y 轴以适应当前可见数据
             plot->yAxis->rescale(true);
             plot->replot();
         }
@@ -320,14 +339,12 @@ void OtherTab::setCrosshairEnabled(bool enabled)
 
 void OtherTab::toggleSensorVisible()
 {
-    // 设置可见性
     m_groupColumnOven->setVisible(m_chkColumnOven->isChecked());
     m_groupPressure->setVisible(m_chkPressure->isChecked());
     m_groupTcdTemp->setVisible(m_chkTcdTemp->isChecked());
     m_groupFlow1->setVisible(m_chkFlow1->isChecked());
     m_groupFlow2->setVisible(m_chkFlow2->isChecked());
 
-    // 动态调整垂直拉伸因子，实现跨行
     int topVisible = 0;
     if (m_groupColumnOven->isVisible()) topVisible++;
     if (m_groupPressure->isVisible()) topVisible++;
@@ -337,26 +354,21 @@ void OtherTab::toggleSensorVisible()
     if (m_groupFlow1->isVisible()) bottomVisible++;
     if (m_groupFlow2->isVisible()) bottomVisible++;
 
-    // 根据可见性设置拉伸因子
     if (m_plotLayout) {
-        // 索引0对应第一行，索引1对应第二行
         if (topVisible == 0 && bottomVisible > 0) {
-            // 第一行完全隐藏，第二行占据全部空间
             m_plotLayout->setStretch(0, 0);
             m_plotLayout->setStretch(1, 1);
         } else if (bottomVisible == 0 && topVisible > 0) {
-            // 第二行完全隐藏，第一行占据全部空间
             m_plotLayout->setStretch(0, 1);
             m_plotLayout->setStretch(1, 0);
         } else {
-            // 两行都有可见项，均分
             m_plotLayout->setStretch(0, 1);
             m_plotLayout->setStretch(1, 1);
         }
     }
 }
 
-// 长度设置接口
+// 长度接口
 void OtherTab::setColumnOvenLength(int points) { m_columnOvenLength = points; }
 void OtherTab::setPressureLength(int points) { m_pressureLength = points; }
 void OtherTab::setTcdTempLength(int points) { m_tcdTempLength = points; }

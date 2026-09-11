@@ -22,6 +22,7 @@
 #include <QDebug>
 #include <QApplication>
 #include <QtMath>
+#include <QSettings>
 
 //==========================================================
 // SignalPlotPanel 实现
@@ -193,6 +194,7 @@ MonitorTab::MonitorTab(QWidget *parent)
     m_hasPendingLevelA(false),
     m_hasPendingLevelB(false),
     m_hasPendingLevelAB(false),
+    m_hasPendingZS(false),
     m_isSaving(false),
     m_startTime(QDateTime::currentMSecsSinceEpoch()),
     m_plotTimer(new QTimer(this))
@@ -212,22 +214,22 @@ MonitorTab::MonitorTab(QWidget *parent)
     setupSignalPanel(rightLayout);
     mainLayout->addWidget(rightGroup, 3);
 
-    // 设置反馈定时器（间隔2秒）
+    // 设置反馈定时器
     m_feedbackTimer->setInterval(2000);
     connect(m_feedbackTimer, &QTimer::timeout, this, &MonitorTab::checkSettingFeedback);
     m_feedbackTimer->start();
 
-    // 创建灯丝功率安全检查定时器（单次，300ms超时）
+    // 灯丝安全检查定时器
     m_powerCheckTimer = new QTimer(this);
     m_powerCheckTimer->setSingleShot(true);
     connect(m_powerCheckTimer, &QTimer::timeout, this, &MonitorTab::onPowerCheckTimeout);
 
-    // 绘图刷新定时器（50ms）
+    // 绘图刷新定时器
     m_plotTimer->setInterval(50);
     connect(m_plotTimer, &QTimer::timeout, this, [this]() { updatePlots(false); });
     m_plotTimer->start();
 
-    // 创建自动停止保存定时器（单次触发）
+    // 自动停止保存定时器
     m_autoStopTimer = new QTimer(this);
     m_autoStopTimer->setSingleShot(true);
     connect(m_autoStopTimer, &QTimer::timeout, this, &MonitorTab::stopDataSave);
@@ -243,9 +245,6 @@ MonitorTab::~MonitorTab()
     }
 }
 
-//==========================================================
-// 通信设置与数据更新
-//==========================================================
 void MonitorTab::setCommunication(Communication *comm)
 {
     m_comm = comm;
@@ -264,13 +263,11 @@ void MonitorTab::onDataUpdated()
     double rawB = m_comm->tcdVoltageB();
     double rawAB = m_comm->tcdVoltageAB();
 
-    // 追加原始数据
     m_time.append(timeSec);
     m_rawA.append(rawA);
     m_rawB.append(rawB);
     m_rawAB.append(rawAB);
 
-    // 限制缓冲区长度
     while (m_time.size() > m_collectPoints) {
         m_time.removeFirst();
         m_rawA.removeFirst();
@@ -298,10 +295,8 @@ void MonitorTab::onDataUpdated()
     m_filtB = smooth(m_rawB);
     m_filtAB = smooth(m_rawAB);
 
-    // 更新界面
     updatePlots(false);
 
-    // 写入文件（若保存中）
     if (m_isSaving && m_saveFile.isOpen() && !m_time.isEmpty()) {
         int idx = m_time.size() - 1;
         QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
@@ -317,51 +312,72 @@ void MonitorTab::onDataUpdated()
 }
 
 //==========================================================
-// UI 构建
+// 控制面板
 //==========================================================
 void MonitorTab::setupControlPanel(QVBoxLayout *layout)
 {
     QWidget *parent = layout->parentWidget();
 
-    // --- 基本控制 ---
+    // ---------- 基本控制 ----------
     auto *basicGroup = new QGroupBox("基本控制", parent);
     auto *basicLayout = new QVBoxLayout(basicGroup);
 
-    m_enableCheck = new QPushButton("开启检测器", basicGroup);
-    m_enableCheck->setCheckable(true);
-    m_enableCheck->setStyleSheet("background-color: gray; color: white;");
-    connect(m_enableCheck, &QPushButton::toggled, this, [this](bool checked) {
-        if (!m_comm) return;
-        m_comm->enableDetector(checked);
-        m_enableCheck->setText(checked ? "关闭检测器" : "开启检测器");
-        m_enableCheck->setStyleSheet(checked ? "background-color: red; color: white;" :
-                                         "background-color: gray; color: white;");
-        emit logMessage("TCD", checked ? "开启检测器加热与灯丝供电" : "关闭检测器加热与灯丝供电");
-    });
-
     QPushButton *refreshBtn = new QPushButton("刷新", basicGroup);
     connect(refreshBtn, &QPushButton::clicked, this, &MonitorTab::refreshParameters);
+    basicLayout->addWidget(refreshBtn);
 
+    // TCD 温度设置
     auto *row1 = new QHBoxLayout;
-    row1->addWidget(m_enableCheck);
-    row1->addWidget(refreshBtn);
-    row1->addStretch();
-    basicLayout->addLayout(row1);
-
-    auto *row3 = new QHBoxLayout;
-    row3->addWidget(new QLabel("TCD温度设置:", basicGroup));
+    row1->addWidget(new QLabel("TCD温度:", basicGroup));
     m_tempEdit = new QSpinBox(basicGroup);
-    m_tempEdit->setRange(-100, 500);
+    m_tempEdit->setRange(0, 500);
     m_tempEdit->setSuffix(" ℃");
     QPushButton *setTempBtn = new QPushButton("设置", basicGroup);
-    row3->addWidget(m_tempEdit);
-    row3->addWidget(setTempBtn);
-    basicLayout->addLayout(row3);
-
-    layout->addWidget(basicGroup);
+    setTempBtn->setToolTip("TS 98\r  设置TCD温度");
+    row1->addWidget(m_tempEdit);
+    row1->addWidget(setTempBtn);
+    basicLayout->addLayout(row1);
     connect(setTempBtn, &QPushButton::clicked, this, &MonitorTab::setTemperature);
 
-    // --- 灯丝功率 ---
+    // ZS 启动调节流程
+    auto *rowZS = new QHBoxLayout;
+    rowZS->addWidget(new QLabel("启动调节:", basicGroup));
+    m_zsEdit = new QSpinBox(basicGroup);
+    m_zsEdit->setRange(0, 4);
+    QPushButton *setZSBtn = new QPushButton("设置", basicGroup);
+    setZSBtn->setToolTip("1：ZS \r 2：ZR \r  3：ZB \r 4：ZA \r");
+    rowZS->addWidget(m_zsEdit);
+    rowZS->addWidget(setZSBtn);
+    basicLayout->addLayout(rowZS);
+    connect(setZSBtn, &QPushButton::clicked, this, &MonitorTab::setZS);
+
+    // 最小精度
+    auto *rowPrec = new QHBoxLayout;
+    rowPrec->addWidget(new QLabel("最小精度:", basicGroup));
+    m_precisionEdit = new QComboBox(basicGroup);
+    m_precisionEdit->addItem("0.001", 1);
+    m_precisionEdit->addItem("0.01", 10);
+    m_precisionEdit->addItem("0.05", 50);
+    m_precisionEdit->addItem("0.1", 100);
+    m_precisionEdit->addItem("1", 1000);
+    QPushButton *setPrecBtn = new QPushButton("设置", basicGroup);
+    setPrecBtn->setToolTip("PF 0.05\r   设置最小精度[]");
+    rowPrec->addWidget(m_precisionEdit);
+    rowPrec->addWidget(setPrecBtn);
+    basicLayout->addLayout(rowPrec);
+    connect(setPrecBtn, &QPushButton::clicked, this, &MonitorTab::setPrecision);
+
+    // RF 复位
+    auto *rowRF = new QHBoxLayout;
+    m_rfBtn = new QPushButton("复位调节流程错误标志", basicGroup);
+    m_rfBtn->setToolTip("收到01数据设备重置");
+    rowRF->addWidget(m_rfBtn);
+    basicLayout->addLayout(rowRF);
+    connect(m_rfBtn, &QPushButton::clicked, this, &MonitorTab::setRF);
+
+    layout->addWidget(basicGroup);
+
+    // ---------- 灯丝功率 ----------
     auto *powerGroup = new QGroupBox("灯丝功率", parent);
     auto *powerLayout = new QVBoxLayout(powerGroup);
 
@@ -371,6 +387,7 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     m_powerAEdit->setRange(0, 100);
     m_powerAEdit->setSuffix(" %");
     QPushButton *setPowerABtn = new QPushButton("设置", powerGroup);
+    setPowerABtn->setToolTip("FA 63\r 设置灯丝A功率");
     powerRowA->addWidget(m_powerAEdit);
     powerRowA->addWidget(setPowerABtn);
     powerLayout->addLayout(powerRowA);
@@ -381,6 +398,7 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     m_powerBEdit->setRange(0, 100);
     m_powerBEdit->setSuffix(" %");
     QPushButton *setPowerBBtn = new QPushButton("设置", powerGroup);
+    setPowerBBtn->setToolTip("FB 63\r  设置灯丝B功率");
     powerRowB->addWidget(m_powerBEdit);
     powerRowB->addWidget(setPowerBBtn);
     powerLayout->addLayout(powerRowB);
@@ -389,58 +407,46 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     connect(setPowerABtn, &QPushButton::clicked, this, &MonitorTab::setPowerA);
     connect(setPowerBBtn, &QPushButton::clicked, this, &MonitorTab::setPowerB);
 
-    // --- 电平设置 ---
+    // ---------- 电平设置 ----------
     auto *levelGroup = new QGroupBox("电平设置", parent);
     auto *levelLayout = new QVBoxLayout(levelGroup);
 
     auto *levelRowA = new QHBoxLayout;
-    levelRowA->addWidget(new QLabel("A电平(mV):", levelGroup));
+    levelRowA->addWidget(new QLabel("A电平:", levelGroup));
     m_levelAEdit = new QSpinBox(levelGroup);
-    m_levelAEdit->setRange(-1000, 1000);
-    m_levelAEdit->setSuffix(" mV");
+    m_levelAEdit->setRange(-12, 12);
     QPushButton *setLevelABtn = new QPushButton("设置", levelGroup);
+    setLevelABtn->setToolTip("ZA 0.1\r");
     levelRowA->addWidget(m_levelAEdit);
     levelRowA->addWidget(setLevelABtn);
     levelLayout->addLayout(levelRowA);
 
     auto *levelRowB = new QHBoxLayout;
-    levelRowB->addWidget(new QLabel("B电平(mV):", levelGroup));
+    levelRowB->addWidget(new QLabel("B电平:", levelGroup));
     m_levelBEdit = new QSpinBox(levelGroup);
-    m_levelBEdit->setRange(-1000, 1000);
-    m_levelBEdit->setSuffix(" mV");
+    m_levelBEdit->setRange(-12, 12);
     QPushButton *setLevelBBtn = new QPushButton("设置", levelGroup);
+    setLevelBBtn->setToolTip("ZB 0.1\r");
     levelRowB->addWidget(m_levelBEdit);
     levelRowB->addWidget(setLevelBBtn);
     levelLayout->addLayout(levelRowB);
 
     auto *levelRowAB = new QHBoxLayout;
-    levelRowAB->addWidget(new QLabel("AB电平(mV):", levelGroup));
+    levelRowAB->addWidget(new QLabel("AB电平:", levelGroup));
     m_levelABEdit = new QSpinBox(levelGroup);
-    m_levelABEdit->setRange(-1000, 1000);
-    m_levelABEdit->setSuffix(" mV");
+    m_levelABEdit->setRange(-12, 12);
     QPushButton *setLevelABBtn = new QPushButton("设置", levelGroup);
+    setLevelABBtn->setToolTip("ZR 0.1\r");
     levelRowAB->addWidget(m_levelABEdit);
     levelRowAB->addWidget(setLevelABBtn);
     levelLayout->addLayout(levelRowAB);
-
-    auto *precisionRow = new QHBoxLayout;
-    precisionRow->addWidget(new QLabel("精度:", levelGroup));
-    m_precisionEdit = new QComboBox(levelGroup);
-    m_precisionEdit->addItem("0.01", 1);
-    m_precisionEdit->addItem("0.1", 10);
-    m_precisionEdit->addItem("1", 100);
-    QPushButton *setPrecisionBtn = new QPushButton("设置", levelGroup);
-    precisionRow->addWidget(m_precisionEdit);
-    precisionRow->addWidget(setPrecisionBtn);
-    levelLayout->addLayout(precisionRow);
 
     layout->addWidget(levelGroup);
     connect(setLevelABtn, &QPushButton::clicked, this, &MonitorTab::setLevelA);
     connect(setLevelBBtn, &QPushButton::clicked, this, &MonitorTab::setLevelB);
     connect(setLevelABBtn, &QPushButton::clicked, this, &MonitorTab::setLevelAB);
-    connect(setPrecisionBtn, &QPushButton::clicked, this, &MonitorTab::setPrecision);
 
-    // --- 文件保存 ---
+    // ---------- 文件保存 ----------
     auto *fileGroup = new QGroupBox("文件保存", parent);
     auto *fileLayout = new QVBoxLayout(fileGroup);
 
@@ -456,23 +462,18 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     m_durationSpin->setRange(1, 1440);
     m_durationSpin->setSuffix(" min");
 
-    // 从 QSettings 读取上次保存的时长
     QSettings settings("MyCompany", "MicroGC");
     int savedDuration = settings.value("monitor/durationMinutes", 1).toInt();
     m_durationSpin->setValue(savedDuration);
-
-    // 当用户修改时长时，保存到 QSettings
     connect(m_durationSpin, qOverload<int>(&QSpinBox::valueChanged), this, [](int val) {
-        QSettings settings("MyCompany", "MicroGC");
-        settings.setValue("monitor/durationMinutes", val);
-        settings.sync();
+        QSettings s("MyCompany", "MicroGC");
+        s.setValue("monitor/durationMinutes", val);
+        s.sync();
     });
 
     durationRow->addWidget(m_durationSpin);
     durationRow->addStretch();
     fileLayout->addLayout(durationRow);
-
-
 
     auto *pathRow = new QHBoxLayout;
     pathRow->addWidget(new QLabel("路径:", fileGroup));
@@ -506,7 +507,6 @@ void MonitorTab::setupSignalPanel(QVBoxLayout *layout)
     connect(m_filterBtnB, &QPushButton::clicked, this, &MonitorTab::toggleFilterB);
     connect(m_filterBtnAB, &QPushButton::clicked, this, &MonitorTab::toggleFilterAB);
 
-    // 暂停时保存快照
     connect(m_panelA, &SignalPlotPanel::pauseStateChanged, this, [this](bool paused) {
         if (paused) {
             int len = qMin(m_time.size(), qMin(m_rawA.size(), m_filtA.size()));
@@ -548,6 +548,7 @@ int MonitorTab::getParameter(const QString &key) const
     if (key == "levelA")          return m_levelAEdit->value();
     if (key == "levelB")          return m_levelBEdit->value();
     if (key == "levelAB")         return m_levelABEdit->value();
+    if (key == "zs")              return m_zsEdit->value();
     if (key == "precision")       return m_precisionEdit->currentData().toInt();
     if (key == "collectPoints")   return m_collectPoints;
     if (key == "averagePoints")   return m_averagePoints;
@@ -568,6 +569,8 @@ void MonitorTab::setParameter(const QString &key, int value)
         m_levelBEdit->setValue(value);
     } else if (key == "levelAB") {
         m_levelABEdit->setValue(value);
+    } else if (key == "zs") {
+        m_zsEdit->setValue(value);
     } else if (key == "precision") {
         int idx = m_precisionEdit->findData(value);
         if (idx >= 0) m_precisionEdit->setCurrentIndex(idx);
@@ -576,14 +579,21 @@ void MonitorTab::setParameter(const QString &key, int value)
         updateDisplayLength();
     } else if (key == "averagePoints") {
         m_averagePoints = value;
-        // 滤波参数改变，下次 onDataUpdated 会自动使用新值
     }
 }
 
 //==========================================================
-// 设置命令发送与验证
+// 设置命令
 //==========================================================
-void MonitorTab::setTemperature() { if (m_comm) { int val = m_tempEdit->value(); m_comm->setTcdTemperature(val); m_pendingTemp = val; m_hasPendingTemp = true; emit logMessage("TCD", QString("TCD温度设置已发送: %1 ℃").arg(val)); } }
+void MonitorTab::setTemperature()
+{
+    if (!m_comm) return;
+    int val = m_tempEdit->value();
+    m_comm->setTcdTemperature(static_cast<quint16>(val));
+    m_pendingTemp = val;
+    m_hasPendingTemp = true;
+    emit logMessage("TCD", QString("TCD温度设置已发送: %1 ℃").arg(val));
+}
 
 void MonitorTab::setPowerA()
 {
@@ -599,12 +609,92 @@ void MonitorTab::setPowerB()
     checkTcdPoweredBeforeSetPower(false, static_cast<quint16>(val));
 }
 
+void MonitorTab::setLevelA()
+{
+    if (!m_comm) return;
+    int val = m_levelAEdit->value();
+    m_comm->setChannelAVoltage(static_cast<quint16>(val));
+    m_pendingLevelA = val;
+    m_hasPendingLevelA = true;
+    emit logMessage("TCD", QString("A电平设置已发送: %1").arg(val));
+}
 
-void MonitorTab::setLevelA()     { if (m_comm) { int val = m_levelAEdit->value(); m_comm->setChannelAVoltage(val); m_pendingLevelA = val; m_hasPendingLevelA = true; emit logMessage("TCD", QString("A电平设置已发送: %1 mV").arg(val)); } }
-void MonitorTab::setLevelB()     { if (m_comm) { int val = m_levelBEdit->value(); m_comm->setChannelBVoltage(val); m_pendingLevelB = val; m_hasPendingLevelB = true; emit logMessage("TCD", QString("B电平设置已发送: %1 mV").arg(val)); } }
-void MonitorTab::setLevelAB()    { if (m_comm) { int val = m_levelABEdit->value(); m_comm->setChannelABVoltage(val); m_pendingLevelAB = val; m_hasPendingLevelAB = true; emit logMessage("TCD", QString("AB电平设置已发送: %1 mV").arg(val)); } }
-void MonitorTab::setPrecision()  { if (m_comm) { int val = m_precisionEdit->currentData().toInt(); m_comm->setPrecision(val); m_pendingPrecision = val; m_hasPendingPrecision = true; emit logMessage("TCD", QString("最小精度设置已发送: 寄存器值 %1").arg(val)); } }
+void MonitorTab::setLevelB()
+{
+    if (!m_comm) return;
+    int val = m_levelBEdit->value();
+    m_comm->setChannelBVoltage(static_cast<quint16>(val));
+    m_pendingLevelB = val;
+    m_hasPendingLevelB = true;
+    emit logMessage("TCD", QString("B电平设置已发送: %1").arg(val));
+}
 
+void MonitorTab::setLevelAB()
+{
+    if (!m_comm) return;
+    int val = m_levelABEdit->value();
+    m_comm->setChannelABVoltage(static_cast<quint16>(val));
+    m_pendingLevelAB = val;
+    m_hasPendingLevelAB = true;
+    emit logMessage("TCD", QString("AB电平设置已发送: %1").arg(val));
+}
+
+void MonitorTab::setZS()
+{
+    if (!m_comm) return;
+    int val = m_zsEdit->value();
+    if (val < 0 || val > 4) return;
+
+    // 1. 发送调节命令
+    m_comm->setZS(static_cast<quint16>(val));
+    emit logMessage("TCD", QString("启动调节流程: %1，暂停轮询30秒").arg(val));
+
+    // 2. 暂停轮询
+    m_comm->stopPolling();
+
+    // 3. 30秒后恢复轮询（不管调节成功与否，都恢复）
+    QTimer::singleShot(30000, this, [this]() {
+        m_comm->startPolling();
+        emit logMessage("TCD", "调节等待结束，恢复轮询");
+    });
+}
+
+void MonitorTab::setPrecision()
+{
+    if (!m_comm) return;
+    int val = m_precisionEdit->currentData().toInt();
+    m_comm->setPrecision(static_cast<quint16>(val));
+    m_pendingPrecision = val;
+    m_hasPendingPrecision = true;
+    emit logMessage("TCD", QString("最小精度设置已发送: %1").arg(val));
+}
+
+void MonitorTab::setRF()
+{
+    if (!m_comm) return;
+    m_comm->setRF(1);
+    emit logMessage("TCD", "复位调节流程错误标志已发送");
+}
+
+void MonitorTab::applyGlobalParameters()
+{
+    if (!m_comm) return;
+
+    // TCD 温度
+    setTemperature();
+
+    // ZA/ZB/ZR 电压
+    setLevelA();
+    setLevelB();
+    setLevelAB();
+
+    // 精度
+    setPrecision();
+}
+
+//==========================================================
+// TCD 通电检查（灯丝设置前）
+//==========================================================
 void MonitorTab::checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value)
 {
     if (m_powerCheckInProgress) {
@@ -617,13 +707,12 @@ void MonitorTab::checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value)
     m_powerCheckAttempts = 0;
     m_powerCheckReplyReceived = false;
 
-    // 第一次读取 TCD 温度设置寄存器（0x03E8）
-    m_comm->requestRegisterRead(0x03E8, [this](quint16) {
+    m_comm->requestRegisterRead(0x0007, [this](quint16) {
         m_powerCheckReplyReceived = true;
     });
 
-    // 启动超时定时器（300ms后检查）
     m_powerCheckTimer->start(300);
+    Q_UNUSED(value);
 }
 
 void MonitorTab::onPowerCheckTimeout()
@@ -631,7 +720,6 @@ void MonitorTab::onPowerCheckTimeout()
     m_powerCheckAttempts++;
 
     if (m_powerCheckReplyReceived) {
-        // 有回复，说明 TCD 已通电，禁止设置灯丝功率
         m_powerCheckInProgress = false;
         m_powerCheckTimer->stop();
         emit logMessage("TCD", "TCD已通电，禁止设置灯丝功率！");
@@ -639,14 +727,12 @@ void MonitorTab::onPowerCheckTimeout()
     }
 
     if (m_powerCheckAttempts < 2) {
-        // 第一次无回复，进行第二次读取
         m_powerCheckReplyReceived = false;
-        m_comm->requestRegisterRead(0x03E8, [this](quint16) {
+        m_comm->requestRegisterRead(0x0007, [this](quint16) {
             m_powerCheckReplyReceived = true;
         });
         m_powerCheckTimer->start(300);
     } else {
-        // 两次均无回复，允许设置功率
         m_powerCheckInProgress = false;
         m_powerCheckTimer->stop();
 
@@ -665,30 +751,15 @@ void MonitorTab::onPowerCheckTimeout()
     }
 }
 
-void MonitorTab::applyGlobalParameters()
-{
-    QTimer::singleShot(0,    this, [this]() { setTemperature(); });
-    QTimer::singleShot(600,  this, [this]() { setLevelA(); });
-    QTimer::singleShot(800,  this, [this]() { setLevelB(); });
-    QTimer::singleShot(1000, this, [this]() { setLevelAB(); });
-    QTimer::singleShot(1200, this, [this]() { setPrecision(); });
-}
-
-void MonitorTab::setDetectorEnabled(bool enabled)
-{
-    if (!m_enableCheck) return;
-    m_enableCheck->blockSignals(true);
-    m_enableCheck->setChecked(enabled);
-    m_enableCheck->setText(enabled ? "关闭检测器" : "开启检测器");
-    m_enableCheck->setStyleSheet(enabled ? "background-color: red; color: white;" : "background-color: gray; color: white;");
-    m_enableCheck->blockSignals(false);
-}
-
+//==========================================================
+// 设置反馈验证
+//==========================================================
 void MonitorTab::checkSettingFeedback()
 {
     if (!m_comm) return;
 
-    auto verify = [this](const QString &name, quint16 addr, quint16 expected, bool &flag, int &retry, auto resend) {
+    auto verify = [this](const QString &name, quint16 addr, quint16 expected,
+                         bool &flag, int &retry, auto resend) {
         if (!flag) return;
         m_comm->requestRegisterRead(addr, [=, &flag, &retry](quint16 actual) {
             if (!flag) return;
@@ -710,65 +781,78 @@ void MonitorTab::checkSettingFeedback()
         });
     };
 
-    verify("TCD温度", 0x03E8, m_pendingTemp, m_hasPendingTemp, m_retryTemp, [this]() { m_comm->setTcdTemperature(m_pendingTemp); });
-    verify("灯丝功率A", 0x03E9, m_pendingPowerA, m_hasPendingPowerA, m_retryPowerA, [this]() { m_comm->setLampPowerA(m_pendingPowerA); });
-    verify("灯丝功率B", 0x03EA, m_pendingPowerB, m_hasPendingPowerB, m_retryPowerB, [this]() { m_comm->setLampPowerB(m_pendingPowerB); });
-    verify("最小精度", 0x03F1, m_pendingPrecision, m_hasPendingPrecision, m_retryPrecision, [this]() { m_comm->setPrecision(m_pendingPrecision); });
-    verify("A电平", 0x03ED, m_pendingLevelA, m_hasPendingLevelA, m_retryLevelA, [this]() { m_comm->setChannelAVoltage(m_pendingLevelA); });
-    verify("B电平", 0x03EE, m_pendingLevelB, m_hasPendingLevelB, m_retryLevelB, [this]() { m_comm->setChannelBVoltage(m_pendingLevelB); });
-    verify("AB电平", 0x03EF, m_pendingLevelAB, m_hasPendingLevelAB, m_retryLevelAB, [this]() { m_comm->setChannelABVoltage(m_pendingLevelAB); });
+    verify("TCD温度", 0x03E8, m_pendingTemp, m_hasPendingTemp, m_retryTemp,
+           [this]() { m_comm->setTcdTemperature(m_pendingTemp); });
+
+    verify("灯丝功率A", 0x03E9, m_pendingPowerA, m_hasPendingPowerA, m_retryPowerA,
+           [this]() { m_comm->setLampPowerA(m_pendingPowerA); });
+
+    verify("灯丝功率B", 0x03EA, m_pendingPowerB, m_hasPendingPowerB, m_retryPowerB,
+           [this]() { m_comm->setLampPowerB(m_pendingPowerB); });
+
+    verify("最小精度", 0x03F1, m_pendingPrecision, m_hasPendingPrecision, m_retryPrecision,
+           [this]() { m_comm->setPrecision(m_pendingPrecision); });
+
+    verify("A电平", 0x03ED, m_pendingLevelA, m_hasPendingLevelA, m_retryLevelA,
+           [this]() { m_comm->setChannelAVoltage(m_pendingLevelA); });
+
+    verify("B电平", 0x03EE, m_pendingLevelB, m_hasPendingLevelB, m_retryLevelB,
+           [this]() { m_comm->setChannelBVoltage(m_pendingLevelB); });
+
+    verify("AB电平", 0x03EF, m_pendingLevelAB, m_hasPendingLevelAB, m_retryLevelAB,
+           [this]() { m_comm->setChannelABVoltage(m_pendingLevelAB); });
 }
 
 void MonitorTab::refreshParameters()
 {
     if (!m_comm) return;
 
-    // 1. 读取 TCD 温度，并直接更新设置温度输入框（不再使用单独的显示标签）
-    m_comm->requestRegisterRead(0x0007, [this](quint16 value) {
-        if (m_tempEdit) {
-            // 假设温度寄存器为有符号16位，按实际协议调整
-            qint16 temp = static_cast<qint16>(value);
-            m_tempEdit->setValue(temp);
-        }
+    // 0x03E8 TCD温度设置值
+    m_comm->requestRegisterRead(0x03E8, [this](quint16 v) {
+        if (m_tempEdit) m_tempEdit->setValue(v);
     });
 
-    // 2. 读取灯丝功率 A
-    m_comm->requestRegisterRead(0x03E9, [this](quint16 value) {
-        if (m_powerAEdit)
-            m_powerAEdit->setValue(value);
+    // 0x03E9 A灯丝功率等级
+    m_comm->requestRegisterRead(0x03E9, [this](quint16 v) {
+        if (m_powerAEdit) m_powerAEdit->setValue(v);
     });
 
-    // 3. 读取灯丝功率 B
-    m_comm->requestRegisterRead(0x03EA, [this](quint16 value) {
-        if (m_powerBEdit)
-            m_powerBEdit->setValue(value);
+    // 0x03EA B灯丝功率等级
+    m_comm->requestRegisterRead(0x03EA, [this](quint16 v) {
+        if (m_powerBEdit) m_powerBEdit->setValue(v);
     });
 
-    // 4. 读取 A 电平
-    m_comm->requestRegisterRead(0x03ED, [this](quint16 value) {
-        if (m_levelAEdit)
-            m_levelAEdit->setValue(static_cast<qint16>(value));
+    // 0x03ED A通道电压设置
+    m_comm->requestRegisterRead(0x03ED, [this](quint16 v) {
+        if (m_levelAEdit) m_levelAEdit->setValue(static_cast<qint16>(v));
     });
 
-    // 5. 读取 B 电平
-    m_comm->requestRegisterRead(0x03EE, [this](quint16 value) {
-        if (m_levelBEdit)
-            m_levelBEdit->setValue(static_cast<qint16>(value));
+    // 0x03EE B通道电压设置
+    m_comm->requestRegisterRead(0x03EE, [this](quint16 v) {
+        if (m_levelBEdit) m_levelBEdit->setValue(static_cast<qint16>(v));
     });
 
-    // 6. 读取 AB 电平
-    m_comm->requestRegisterRead(0x03EF, [this](quint16 value) {
-        if (m_levelABEdit)
-            m_levelABEdit->setValue(static_cast<qint16>(value));
+    // 0x03EF AB通道电压设置
+    m_comm->requestRegisterRead(0x03EF, [this](quint16 v) {
+        if (m_levelABEdit) m_levelABEdit->setValue(static_cast<qint16>(v));
     });
 
-    // 7. 读取最小精度（寄存器值通常为 1、10、100）
-    m_comm->requestRegisterRead(0x03F1, [this](quint16 value) {
+    // 0x03F0 ZS 启动调节流程（0~4）
+    m_comm->requestRegisterRead(0x03F0, [this](quint16 v) {
+        if (m_zsEdit) m_zsEdit->setValue(v);
+    });
+
+    // 0x03F1 PF 最小精度
+    m_comm->requestRegisterRead(0x03F1, [this](quint16 v) {
         if (m_precisionEdit) {
-            int idx = m_precisionEdit->findData(static_cast<int>(value));
-            if (idx >= 0)
-                m_precisionEdit->setCurrentIndex(idx);
+            int idx = m_precisionEdit->findData(static_cast<int>(v));
+            if (idx >= 0) m_precisionEdit->setCurrentIndex(idx);
         }
+    });
+
+    // 0x03F2 RF 复位标志（只读，无 UI 显示，记录到日志即可）
+    m_comm->requestRegisterRead(0x03F2, [this](quint16 v) {
+        emit logMessage("TCD", QString("RF 复位标志当前值: %1").arg(v));
     });
 
     emit logMessage("TCD", "刷新参数：已请求读取所有设置值");
@@ -811,7 +895,6 @@ void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
     m_saveStream.setDevice(&m_saveFile);
     m_saveStream << "时间 滤波前A 滤波后A 滤波前B 滤波后B 滤波前A-B 滤波后A-B\n";
 
-    // 写入已缓冲的数据
     for (int i = 0; i < m_time.size(); ++i) {
         QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
         .arg(m_time.at(i), 0, 'f', 3)
@@ -824,7 +907,6 @@ void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
         m_saveStream << dataLine << "\n";
     }
 
-    // 启动自动停止定时器（分钟转毫秒）
     if (durationMinutes > 0) {
         m_autoStopTimer->start(durationMinutes * 60 * 1000);
     }
@@ -833,7 +915,7 @@ void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
 void MonitorTab::stopDataSave()
 {
     m_isSaving = false;
-    m_autoStopTimer->stop();   // 停止自动停止定时器（无论是否已触发）
+    m_autoStopTimer->stop();
     if (m_saveFile.isOpen()) {
         m_saveStream.flush();
         m_saveFile.close();
@@ -855,7 +937,7 @@ void MonitorTab::stopFileSave()
 }
 
 //==========================================================
-// 绘图与显示控制
+// 绘图
 //==========================================================
 void MonitorTab::updateDisplayLength()
 {
@@ -874,7 +956,6 @@ void MonitorTab::updatePlots(bool force)
 {
     if (m_time.isEmpty()) return;
 
-    // A通道
     if (m_panelA->isPaused()) {
         if (force && m_panelA->hasSnapshot()) {
             QVector<double> x = m_panelA->snapshotX();
@@ -889,7 +970,6 @@ void MonitorTab::updatePlots(bool force)
             m_panelA->setData(x, y);
     }
 
-    // B通道
     if (m_panelB->isPaused()) {
         if (force && m_panelB->hasSnapshot()) {
             QVector<double> x = m_panelB->snapshotX();
@@ -904,7 +984,6 @@ void MonitorTab::updatePlots(bool force)
             m_panelB->setData(x, y);
     }
 
-    // AB通道
     if (m_panelAB->isPaused()) {
         if (force && m_panelAB->hasSnapshot()) {
             QVector<double> x = m_panelAB->snapshotX();

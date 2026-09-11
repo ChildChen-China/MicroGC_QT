@@ -21,7 +21,6 @@ class OtherTab : public QWidget
 public:
     explicit OtherTab(QWidget *parent = nullptr);
 
-    // 设置各通道显示长度
     void setColumnOvenLength(int points);
     void setPressureLength(int points);
     void setTcdTempLength(int points);
@@ -44,9 +43,8 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-    QHBoxLayout* setupFirstRow();          // 顶部选项行
-    QVBoxLayout* setupPlotLayout();        // 图表区域（包含上下两个水平布局）
-
+    QHBoxLayout* setupFirstRow();
+    QVBoxLayout* setupPlotLayout();
     void resetAllPlots();
 
     QPushButton *m_resetBtn;
@@ -74,7 +72,6 @@ private:
 
     bool m_autoScrollEnabled;
 
-    // 显示长度
     int m_columnOvenLength = 1000;
     int m_pressureLength = 1000;
     int m_tcdTempLength = 1000;
@@ -84,10 +81,9 @@ private:
     QTimer *m_scrollTimer;
     qint64 m_startTime;
 
-    // 两行图表布局
-    QHBoxLayout *m_topRowLayout;      // 第一行（柱温箱、压力、TCD温度）
-    QHBoxLayout *m_bottomRowLayout;   // 第二行（流量器1、流量器2）
-    QVBoxLayout *m_plotLayout;        // 垂直布局，包含上面两个行布局
+    QHBoxLayout *m_topRowLayout;
+    QHBoxLayout *m_bottomRowLayout;
+    QVBoxLayout *m_plotLayout;
 };
 
 #endif // OTHERTAB_H

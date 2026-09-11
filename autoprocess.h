@@ -4,7 +4,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QDateTime>
-#include <QHash>
+#include <QVector>
 #include <QStringList>
 #include <QList>
 #include <functional>
@@ -15,8 +15,8 @@ struct AutoProcessSettings
 {
     int columnOvenTemp = 60;
     int tcdTemp = 120;
-    int carrierFlow1 = 200;
-    int carrierFlow2 = 100;
+    int carrierFlow1Voltage = 5;
+    int carrierFlow2Voltage = 5;
     double tempTolerance = 0.5;
     double startRecordMin = 0.01;
     double valveOpenMin = 0.1;
@@ -40,8 +40,8 @@ signals:
     void stateChanged(const QString &stateName);
     void logMessage(const QString &type, const QString &event);
     void deviceStateChanged(const QString &device, bool state);
-    void saveDataTriggered();      // 开始记录信号
-    void stopDataSaveTriggered();  // 停止记录信号
+    void saveDataTriggered();
+    void stopDataSaveTriggered();
     void finished();
 
 public slots:
@@ -66,19 +66,21 @@ private:
 
     struct CommandToVerify {
         QString name;
-        quint16 address;
-        quint16 expected;
+        quint16 startAddr;
+        QVector<quint16> expectedValues;
         std::function<void()> resend;
         int retryCount = 0;
     };
 
     void changeState(State newState);
     void sendInitialSettings();
-    void verifySettings();
     void sendTestSequenceCommand(double elapsedMin);
     void beginCooling();
     void enqueueVerify(const QString &name, quint16 address, quint16 expected,
                        std::function<void()> resend);
+    void enqueueVerifyRange(const QString &name, quint16 startAddr,
+                            const QVector<quint16> &expectedValues,
+                            std::function<void()> resend);
     void processVerifyQueue();
 
     Communication *m_comm;
@@ -93,6 +95,7 @@ private:
     bool m_recordStarted = false;
     bool m_stopSaveSent = false;
     bool m_verifyReadPending = false;
+
     QList<CommandToVerify> m_verifyQueue;
 };
 

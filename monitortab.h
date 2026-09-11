@@ -13,15 +13,13 @@
 
 class QVBoxLayout;
 class QLineEdit;
-class QCheckBox;
 class QSpinBox;
 class QLabel;
 class InteractivePlot;
 class Communication;
-class QPushButton;
 
 //==========================================================
-// SignalPlotPanel - 单个信号显示面板（含缩放、滤波切换等）
+// SignalPlotPanel - 单个信号显示面板
 //==========================================================
 class SignalPlotPanel : public QGroupBox
 {
@@ -57,11 +55,11 @@ private:
     QVector<double> m_snapshotX, m_snapshotRawY, m_snapshotFiltY;
     bool m_inverted;
     bool m_hasSnapshot;
-    bool m_rangeInitialized = false; // 是否已初始化坐标轴范围
+    bool m_rangeInitialized = false;
 };
 
 //==========================================================
-// MonitorTab - 主监视标签页
+// MonitorTab
 //==========================================================
 class MonitorTab : public QWidget
 {
@@ -88,7 +86,6 @@ public slots:
     void setChannelBVisible(bool visible);
     void setChannelABVisible(bool visible);
     void applyGlobalParameters();
-    void setDetectorEnabled(bool enabled);
 
 signals:
     void logMessage(const QString &type, const QString &event);
@@ -101,7 +98,9 @@ private slots:
     void setLevelA();
     void setLevelB();
     void setLevelAB();
+    void setZS();
     void setPrecision();
+    void setRF();
     void choosePath();
     void stopFileSave();
     void updatePlots(bool force = false);
@@ -110,21 +109,21 @@ private slots:
     void toggleFilterAB();
     void updateDisplayLength();
     void checkSettingFeedback();
-
     void onPowerCheckTimeout();
 
 private:
     void setupControlPanel(QVBoxLayout *layout);
     void setupSignalPanel(QVBoxLayout *layout);
+    void checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value);
 
-    // ---- 数据缓存 ----
+    // 数据缓存
     QVector<double> m_time;
     QVector<double> m_rawA, m_rawB, m_rawAB;
     QVector<double> m_filtA, m_filtB, m_filtAB;
     int m_collectPoints;
     int m_averagePoints;
 
-    // ---- 显示控制 ----
+    // 显示控制
     bool m_showFiltA;
     bool m_showFiltB;
     bool m_showFiltAB;
@@ -137,8 +136,7 @@ private:
 
     Communication *m_comm;
 
-    // ---- UI 控件 ----
-    QPushButton  *m_enableCheck;
+    // UI 控件
     QLabel *m_tempValueLabel;
     QSpinBox *m_tempEdit;
     QSpinBox *m_powerAEdit;
@@ -146,17 +144,19 @@ private:
     QSpinBox *m_levelAEdit;
     QSpinBox *m_levelBEdit;
     QSpinBox *m_levelABEdit;
+    QSpinBox *m_zsEdit;
     QComboBox *m_precisionEdit;
+    QPushButton *m_rfBtn;
     QLineEdit *m_fileNameEdit;
-    QSpinBox  *m_durationSpin;
+    QSpinBox *m_durationSpin;
     QLineEdit *m_pathEdit;
 
-    // ---- 设置验证 ----
+    // 设置验证
     QTimer *m_feedbackTimer;
     quint16 m_pendingTemp, m_pendingPowerA, m_pendingPowerB, m_pendingPrecision;
-    quint16 m_pendingLevelA, m_pendingLevelB, m_pendingLevelAB;
+    quint16 m_pendingLevelA, m_pendingLevelB, m_pendingLevelAB, m_pendingZS;
     bool m_hasPendingTemp, m_hasPendingPowerA, m_hasPendingPowerB;
-    bool m_hasPendingPrecision, m_hasPendingLevelA, m_hasPendingLevelB, m_hasPendingLevelAB;
+    bool m_hasPendingPrecision, m_hasPendingLevelA, m_hasPendingLevelB, m_hasPendingLevelAB, m_hasPendingZS;
     int m_retryTemp = 0;
     int m_retryPowerA = 0;
     int m_retryPowerB = 0;
@@ -165,20 +165,17 @@ private:
     int m_retryLevelB = 0;
     int m_retryLevelAB = 0;
 
-    // ---- 文件保存（主线程直接写） ----
+    // 文件保存
     QFile m_saveFile;
     QTextStream m_saveStream;
     bool m_isSaving = false;
-    qint64 m_startTime;          // 相对时间起点（毫秒）
-    QTimer *m_autoStopTimer;     // 自动停止保存定时器（单次）
+    qint64 m_startTime;
+    QTimer *m_autoStopTimer;
 
-
-    // ---- 绘图刷新定时器 ----
+    // 绘图刷新
     QTimer *m_plotTimer;
 
-    void checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value);
-
-    // 灯丝功率安全检查相关
+    // TCD 通电检查（灯丝功率设置前）
     QTimer *m_powerCheckTimer;
     bool m_powerCheckInProgress = false;
     bool m_powerCheckIsA = false;

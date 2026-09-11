@@ -20,9 +20,9 @@
 #include <QtMath>
 #include <QDebug>
 
-//-------------------------------------------------------------
-// ValveItem 实现
-//-------------------------------------------------------------
+//==========================================================
+// ValveItem
+//==========================================================
 ValveItem::ValveItem(const QString &name, const QPointF &pos, qreal rotation, QGraphicsItem *parent)
     : QGraphicsObject(parent)
     , m_name(name)
@@ -101,9 +101,9 @@ void ValveItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
     }
 }
 
-//-------------------------------------------------------------
-// SixWayValveItem 实现
-//-------------------------------------------------------------
+//==========================================================
+// SixWayValveItem
+//==========================================================
 SixWayValveItem::SixWayValveItem(const QString &name, const QPointF &center, QGraphicsItem *parent)
     : QGraphicsObject(parent)
     , m_name(name)
@@ -131,7 +131,6 @@ SixWayValveItem::SixWayValveItem(const QString &name, const QPointF &center, QGr
         m_ports.append(port);
     }
 
-    // 修正端口编号位置：半径改为28，字体略小，确保5和6显示正常
     for (int i = 0; i < 6; ++i) {
         double angle = -90 + i * 60;
         double xInner = 28 * qCos(qDegreesToRadians(angle));
@@ -148,8 +147,8 @@ SixWayValveItem::SixWayValveItem(const QString &name, const QPointF &center, QGr
 
     m_label = new QGraphicsTextItem(m_name, this);
     m_label->setDefaultTextColor(Qt::black);
-    m_label->setFont(QFont("Arial", 22, QFont::Bold));
-    m_label->setPos(-180, 0);
+    m_label->setFont(QFont("Arial", 16, QFont::Bold));
+    m_label->setPos(-25, 85);
 }
 
 QRectF SixWayValveItem::boundingRect() const
@@ -209,9 +208,9 @@ void SixWayValveItem::updateInternalConnections()
     m_internalPath->setPen(pen);
 }
 
-//-------------------------------------------------------------
-// DoubleClickableRect 实现
-//-------------------------------------------------------------
+//==========================================================
+// DoubleClickableRect
+//==========================================================
 DoubleClickableRect::DoubleClickableRect(const QRectF &rect, const QString &title, QGraphicsItem *parent)
     : QGraphicsObject(parent), m_rect(rect), m_title(title)
 {
@@ -239,9 +238,9 @@ void DoubleClickableRect::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event)
     QGraphicsObject::mouseDoubleClickEvent(event);
 }
 
-//-------------------------------------------------------------
-// 辅助函数：加箭头（醒目大箭头，支持旋转）
-//-------------------------------------------------------------
+//==========================================================
+// 辅助函数
+//==========================================================
 void addArrow(QGraphicsScene *scene, const QPointF &pos, bool right, qreal angle = 0.0)
 {
     QPolygonF arrow;
@@ -257,18 +256,12 @@ void addArrow(QGraphicsScene *scene, const QPointF &pos, bool right, qreal angle
     auto *item = new QGraphicsPolygonItem(arrow);
     item->setBrush(Qt::black);
     item->setPen(QPen(Qt::black, 2));
-    if (right) {
-        item->setTransformOriginPoint(pos.x() + 16, pos.y());
-    } else {
-        item->setTransformOriginPoint(pos.x(), pos.y());
-    }
+    if (right) item->setTransformOriginPoint(pos.x() + 16, pos.y());
+    else item->setTransformOriginPoint(pos.x(), pos.y());
     item->setRotation(angle);
     scene->addItem(item);
 }
 
-//-------------------------------------------------------------
-// 辅助函数：微调阀
-//-------------------------------------------------------------
 void addFineAdjustValve(QGraphicsScene *scene, const QPointF &pos)
 {
     auto *body = new QGraphicsRectItem(pos.x() - 13, pos.y() - 40, 26, 81);
@@ -279,17 +272,16 @@ void addFineAdjustValve(QGraphicsScene *scene, const QPointF &pos)
     auto *wheel = new QGraphicsLineItem(pos.x(), pos.y() - 40, pos.x(), pos.y() - 58);
     wheel->setPen(QPen(Qt::black, 2));
     scene->addItem(wheel);
+
     auto *wheelBar = new QGraphicsLineItem(pos.x() - 15, pos.y() - 58, pos.x() + 15, pos.y() - 58);
     wheelBar->setPen(QPen(Qt::black, 2));
     scene->addItem(wheelBar);
+
     auto *wheelStem = new QGraphicsLineItem(pos.x(), pos.y() - 71, pos.x(), pos.y() - 58);
     wheelStem->setPen(QPen(Qt::black, 2));
     scene->addItem(wheelStem);
 }
 
-//-------------------------------------------------------------
-// 辅助函数：长方形过滤器
-//-------------------------------------------------------------
 void addFilterRect(QGraphicsScene *scene, const QPointF &center)
 {
     auto *filter = new QGraphicsRectItem(center.x() - 25, center.y() - 14, 50, 28);
@@ -301,9 +293,6 @@ void addFilterRect(QGraphicsScene *scene, const QPointF &center)
     scene->addLine(center.x(), center.y() - 8, center.x(), center.y() + 8, QPen(Qt::black, 1));
 }
 
-//-------------------------------------------------------------
-// 专业TCD绘制函数
-//-------------------------------------------------------------
 void addTCD(QGraphicsScene *scene, const QPointF &pos)
 {
     qreal x = pos.x();
@@ -332,19 +321,19 @@ void addTCD(QGraphicsScene *scene, const QPointF &pos)
         cell->setBrush(QBrush(QColor("#202020")));
         cell->setPen(QPen(QColor("#888888"), 1.5));
         scene->addItem(cell);
+
         auto *highlight = new QGraphicsEllipseItem(c.x()-16, c.y()-16, 12, 12);
         highlight->setBrush(QBrush(QColor("#404040")));
         highlight->setPen(Qt::NoPen);
         scene->addItem(highlight);
+
         scene->addLine(c.x(), c.y()+24, c.x(), c.y()+52, QPen(Qt::black, 1.6));
     }
-
-    // 此处不添加固定的“5TCD-001”标签，留待动态更新
 }
 
-//-------------------------------------------------------------
-// buildGasScene 函数实现
-//-------------------------------------------------------------
+//==========================================================
+// buildGasScene
+//==========================================================
 void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
 {
     QPen blackPen(Qt::black, 3.5);
@@ -422,19 +411,19 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
         circle->setBrush(QBrush(QColor("#202020")));
         circle->setPen(QPen(QColor("#888888"), 1.5));
         scene->addItem(circle);
+
         auto *highlight = new QGraphicsEllipseItem(p.x()-8, p.y()-8, 8, 8);
         highlight->setBrush(QBrush(QColor("#404040")));
         highlight->setPen(Qt::NoPen);
         scene->addItem(highlight);
+
         scene->addLine(p.x(), p.y()+15, p.x(), p.y()+40, QPen(Qt::black, 1.6));
     }
 
     scene->addLine(1290, 190, 1430, 190, QPen(Qt::black, 2.5));
     scene->addLine(1290, 195, 1430, 195, QPen(Qt::black, 2.5));
-
     scene->addLine(1360, 310, 1360, 327, QPen(Qt::black, 2));
 
-    // 动态温度标签：替代原来的“4-ZWX-001”
     auto *ovenTempLabel = new QGraphicsTextItem("-- ℃");
     ovenTempLabel->setObjectName("ovenTempLabel");
     ovenTempLabel->setFont(QFont("Arial", 22, QFont::Bold));
@@ -452,6 +441,7 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addLine(280, 959, 1258, 959, blackPen);
     addArrow(scene, QPointF(688, 959), true);
     addFilterRect(scene, QPointF(442, 959));
+
     auto *filterLabel = new QGraphicsTextItem("过滤器");
     filterLabel->setFont(QFont("Arial", 18, QFont::Bold));
     filterLabel->setDefaultTextColor(Qt::black);
@@ -463,7 +453,6 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     addArrow(scene, QPointF(1138, 1104), false);
     scene->addLine(1128, 1104, 1128, 1126, thinPen);
 
-    // 压力传感器图片
     QPixmap volumePixmap(":/img/volume.png");
     if (!volumePixmap.isNull()) {
         auto *psItem = new QGraphicsPixmapItem(volumePixmap);
@@ -473,19 +462,18 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
         scene->addItem(psItem);
     }
 
-    // 压力传感器数值标签
-    auto *pressureValueLabel = new QGraphicsTextItem("-- kPa");
+    auto *pressureValueLabel = new QGraphicsTextItem("-- KP");
     pressureValueLabel->setObjectName("pressureValueLabel");
     pressureValueLabel->setFont(QFont("Arial", 18, QFont::Bold));
     pressureValueLabel->setDefaultTextColor(Qt::black);
     pressureValueLabel->setPos(730, 1120);
     scene->addItem(pressureValueLabel);
 
-    // 测温元件小正方形
     auto *tempRect = new QGraphicsRectItem(865, 1055, 40, 40);
     tempRect->setBrush(QBrush(QColor("#f0f0f0")));
     tempRect->setPen(QPen(Qt::black, 2));
     scene->addItem(tempRect);
+
     auto *tempLabel = new QGraphicsTextItem("测温元件");
     tempLabel->setFont(QFont("Arial", 17, QFont::Bold));
     tempLabel->setDefaultTextColor(Qt::black);
@@ -501,6 +489,7 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addLine(1374, 902, 1374, 1053, blackPen);
     scene->addLine(1275, 902, 1275, 1005, blackPen);
     scene->addLine(1275, 1053, 1275, 1005, blackPen);
+
     QPainterPath loopPath;
     loopPath.moveTo(1279, 1004);
     loopPath.lineTo(1300, 1004);
@@ -510,12 +499,10 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     auto *loopItem = new QGraphicsPathItem(loopPath);
     loopItem->setPen(QPen(Qt::black, 5.5));
     scene->addItem(loopItem);
-    // 删除原来的3-FX-001标签
 
     // ========== 六、检测器 ==========
     addTCD(scene, QPointF(1479, 1090));
 
-    // TCD温度动态标签（原来5TCD-001位置）
     auto *tcdTempLabel = new QGraphicsTextItem("-- ℃");
     tcdTempLabel->setObjectName("tcdTempLabel");
     tcdTempLabel->setFont(QFont("Arial", 20, QFont::Bold));
@@ -530,15 +517,14 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addLine(1805, 1367, 346, 1367, blackPen);
     addArrow(scene, QPointF(1588, 1367), false);
 
-    // 流量标签
-    auto *flow1ValueLabel = new QGraphicsTextItem("-- mL/min");
+    auto *flow1ValueLabel = new QGraphicsTextItem("-- min/L");
     flow1ValueLabel->setObjectName("flow1ValueLabel");
     flow1ValueLabel->setFont(QFont("Arial", 15, QFont::Bold));
     flow1ValueLabel->setDefaultTextColor(Qt::black);
     flow1ValueLabel->setPos(750, 480);
     scene->addItem(flow1ValueLabel);
 
-    auto *flow2ValueLabel = new QGraphicsTextItem("-- mL/min");
+    auto *flow2ValueLabel = new QGraphicsTextItem("-- min/L");
     flow2ValueLabel->setObjectName("flow2ValueLabel");
     flow2ValueLabel->setFont(QFont("Arial", 15, QFont::Bold));
     flow2ValueLabel->setDefaultTextColor(Qt::black);
@@ -567,6 +553,7 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     fineLabel->setPos(917, 456);
     scene->addItem(fineLabel);
 
+
     auto *ovenBigLabel = new QGraphicsTextItem("柱温箱");
     ovenBigLabel->setFont(QFont("Arial", 26, QFont::Bold));
     ovenBigLabel->setDefaultTextColor(Qt::black);
@@ -579,7 +566,7 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     detLabel->setPos(1900, 1248);
     scene->addItem(detLabel);
 
-    // ========== 6个静态专业短管道 ==========
+    // ========== 6个静态管道 ==========
     bool pipeArrows[6] = {true, true, true, false, false, false};
     const double pipeLen = 150;
     QList<QPointF> pipePositions = {
@@ -595,8 +582,6 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
         auto *pipeGroup = new QGraphicsItemGroup();
         pipeGroup->setFlag(QGraphicsItem::ItemIsMovable, false);
         scene->addItem(pipeGroup);
-
-        double yCenter = 0;
 
         auto *flange = new QGraphicsRectItem(-6, -8, 12, 16, pipeGroup);
         flange->setBrush(QBrush(QColor("#b0b0b0")));
@@ -633,7 +618,6 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addItem(flow2Rect);
     QObject::connect(flow2Rect, &DoubleClickableRect::doubleClicked, ctrl, &ControlTab::showRealtimeDialog);
 
-    // 修正压力传感器双击区域
     auto *pressureRect = new DoubleClickableRect(QRectF(720, 900, 250, 250), "压力传感器");
     scene->addItem(pressureRect);
     QObject::connect(pressureRect, &DoubleClickableRect::doubleClicked, ctrl, &ControlTab::showRealtimeDialog);
@@ -646,20 +630,17 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addItem(ovenRect);
     QObject::connect(ovenRect, &DoubleClickableRect::doubleClicked, ctrl, &ControlTab::showRealtimeDialog);
 
-    // ========== 连接阀门信号 ==========
+    // ========== 连接信号 ==========
     const auto items = scene->items();
     for (QGraphicsItem *item : items) {
         if (auto *valve = dynamic_cast<ValveItem*>(item)) {
-            // 电磁阀点击连接到 handleValveClicked，由它控制六通阀
-            if (valve->name() == "电磁阀") {
-                QObject::connect(valve, &ValveItem::clicked, ctrl, &ControlTab::handleValveClicked);
-            }
+            QObject::connect(valve, &ValveItem::clicked, ctrl, &ControlTab::handleValveClicked);
             QObject::connect(valve, &ValveItem::stateChanged, ctrl, [ctrl](const QString &name, bool state) {
                 emit ctrl->commandRequested(name, state);
             });
         }
         if (auto *sixValve = dynamic_cast<SixWayValveItem*>(item)) {
-            // 六通阀不再响应点击，只保留状态变化信号用于可能的日志
+            QObject::connect(sixValve, &SixWayValveItem::clicked, ctrl, &ControlTab::handleSixWayClicked);
             QObject::connect(sixValve, &SixWayValveItem::stateChanged, ctrl, [ctrl](const QString &name, bool state) {
                 emit ctrl->commandRequested(name, state);
             });

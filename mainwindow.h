@@ -3,8 +3,6 @@
 
 #include <QMainWindow>
 #include <QModbusTcpClient>
-#include <QPainter>
-#include <QPixmap>
 #include "autoprocess.h"
 
 class QTabWidget;
@@ -26,11 +24,13 @@ private slots:
     void openDataProcessing();
     void openSettings();
     void openAutoProcessSettings();
-    void startStopAutoProcess();       // 合并的开始/停止槽
+    void startStopAutoProcess();
     void resetSystem();
     void toggleLogVisible(bool visible);
     void onCommunicationConnected();
     void onCommunicationDisconnected();
+    void checkTcdPowerStatus();
+    void updateTcdPowerIcon();
 
 private:
     void createActions();
@@ -44,12 +44,11 @@ private:
     OtherTab *m_otherTab;
 
     AutoProcessManager *m_autoProcess;
-    QAction *m_startStopAction;        // 开始/停止切换按钮动作
+    QAction *m_startStopAction;
+    QAction *m_connectAction = nullptr;
+    QIcon m_iconConnectDefault;
 
-    int m_flow1Setpoint = 200;
-    int m_flow2Setpoint = 100;
-
-    // TCD 电源状态指示
+    // TCD 电源指示
     QAction *m_tcdPowerAction = nullptr;
     QTimer *m_tcdCheckTimer = nullptr;
     bool m_tcdPowered = false;
@@ -58,11 +57,8 @@ private:
     QIcon m_iconTcdOn;
     QIcon m_iconTcdOff;
 
-    QAction *m_connectAction = nullptr;   // 连接动作指针
-    QIcon m_iconConnectDefault;           // 默认连接图标
-
-    void updateTcdPowerIcon();
-    void checkTcdPowerStatus();
+    int m_flow1Voltage = 5;
+    int m_flow2Voltage = 5;
 };
 
 #endif // MAINWINDOW_H

@@ -1,7 +1,6 @@
 #include "autoprocess.h"
 #include "communication.h"
 #include <QDebug>
-#include <QThread>
 
 AutoProcessManager::AutoProcessManager(Communication *comm, QObject *parent)
     : QObject(parent)
@@ -10,10 +9,8 @@ AutoProcessManager::AutoProcessManager(Communication *comm, QObject *parent)
     , m_processTimer(new QTimer(this))
     , m_stopSaveSent(false)
 {
-    m_processTimer->setInterval(3000);   // 3秒
+    m_processTimer->setInterval(1500);
     connect(m_processTimer, &QTimer::timeout, this, &AutoProcessManager::onProcessTimer);
-
-    // 改为连接慢速数据更新，因为自动流程关注的是温度/流量
     connect(m_comm, &Communication::slowDataUpdated, this, &AutoProcessManager::onDataUpdated);
 }
 
@@ -78,7 +75,6 @@ void AutoProcessManager::reset()
     if (m_state == Idle) return;
     m_processTimer->stop();
 
-    // 若正在记录，先停止保存
     if (m_recordStarted && !m_stopSaveSent) {
         m_stopSaveSent = true;
         emit stopDataSaveTriggered();
@@ -86,38 +82,14 @@ void AutoProcessManager::reset()
 
     m_verifyQueue.clear();
 
-    // 关闭检测器
-    m_comm->enableDetector(false);
-    enqueueVerify("关闭检测器", 0x03EB, 0,
-                  [this]() { m_comm->enableDetector(false); });
+    // 关闭柱温箱、电磁阀、流量1、流量2、六通阀（批量写 0x0400~0x0404）
+    QVector<quint16> shutdownVals = {0, 0, 0, 0, 0};
+    m_comm->writeMultipleRegisters(0x0400, shutdownVals, "复位: 关闭柱温箱/流量/阀门");
+    enqueueVerifyRange("关闭柱温箱及流量阀门", 0x0400, shutdownVals,
+                       [this, shutdownVals]() { m_comm->writeMultipleRegisters(0x0400, shutdownVals, "重发: 关闭柱温箱/流量/阀门"); });
 
-    // 关闭柱温箱
-    m_comm->setColumnOvenEnable(false);
-    enqueueVerify("关闭柱温箱", 0x0400, 0,
-                  [this]() { m_comm->setColumnOvenEnable(false); });
-
-    // 关闭流量1
-    m_comm->setFlow1Setpoint(0);
-    enqueueVerify("关闭流量1", 0x0402, 0,
-                  [this]() { m_comm->setFlow1Setpoint(0); });
-
-    // 关闭流量2
-    m_comm->setFlow2Setpoint(0);
-    enqueueVerify("关闭流量2", 0x0403, 0,
-                  [this]() { m_comm->setFlow2Setpoint(0); });
-
-    // 先关闭电磁阀（bit0）
-    m_comm->setValveBit(0, false);
     emit deviceStateChanged("电磁阀", false);
-
-    // 再关闭六通阀
-    m_comm->setSixWayValve1(false);
-    m_comm->setSixWayValve2(false);
-    enqueueVerify("关闭六通阀", 0x0404, 0,
-                  [this]() { m_comm->setSixWayValve1(false); });
-
     emit deviceStateChanged("六通阀", false);
-    emit deviceStateChanged("TCD", false);
 
     changeState(Shutdown);
     m_processTimer->start();
@@ -131,7 +103,6 @@ void AutoProcessManager::onDataUpdated()
 
 void AutoProcessManager::onProcessTimer()
 {
-    // 优先处理验证队列
     if (!m_verifyQueue.isEmpty()) {
         processVerifyQueue();
         return;
@@ -148,7 +119,7 @@ void AutoProcessManager::onProcessTimer()
     case Stabilizing:
     {
         double ovenTemp = m_comm->columnOven1Temp();
-        double tcdTemp = m_comm->tcdTemperature();
+        double tcdTemp = m_comm->tcdMeasureTemp();
         bool ovenOk = qAbs(ovenTemp - m_settings.columnOvenTemp) <= m_settings.tempTolerance;
         bool tcdOk = qAbs(tcdTemp - m_settings.tcdTemp) <= m_settings.tempTolerance;
 
@@ -189,123 +160,100 @@ void AutoProcessManager::onProcessTimer()
         double ovenTemp = m_comm->columnOven1Temp();
         emit logMessage("自动流程", QString("冷却中，当前柱温箱温度: %1 ℃").arg(ovenTemp));
         if (ovenTemp <= m_settings.coolDownTemp) {
-            reset();   // 进入关闭验证
+            reset();
         }
         break;
     }
 
     case Shutdown:
-        // 关闭验证完成后已在 processVerifyQueue 中回到 Idle
         break;
     }
 }
 
 void AutoProcessManager::sendInitialSettings()
 {
-    m_comm->setColumnOvenEnable(true);
-    enqueueVerify("开启柱温箱", 0x0400, 1,
-                  [this]() { m_comm->setColumnOvenEnable(true); });
-    m_comm->setColumnOven1Temperature(static_cast<quint16>(m_settings.columnOvenTemp));
-    enqueueVerify("柱温箱温度", 0x03FF, m_settings.columnOvenTemp,
-                  [this]() { m_comm->setColumnOven1Temperature(m_settings.columnOvenTemp); });
-    m_comm->setTcdTemperature(static_cast<quint16>(m_settings.tcdTemp));
-    enqueueVerify("TCD温度", 0x03E8, m_settings.tcdTemp,
-                  [this]() { m_comm->setTcdTemperature(m_settings.tcdTemp); });
-    m_comm->setFlow1Setpoint(static_cast<quint16>(m_settings.carrierFlow1));
-    enqueueVerify("流量1", 0x0402, m_settings.carrierFlow1,
-                  [this]() { m_comm->setFlow1Setpoint(m_settings.carrierFlow1); });
-    m_comm->setFlow2Setpoint(static_cast<quint16>(m_settings.carrierFlow2));
-    enqueueVerify("流量2", 0x0403, m_settings.carrierFlow2,
-                  [this]() { m_comm->setFlow2Setpoint(m_settings.carrierFlow2); });
-    m_comm->enableDetector(true);
-    enqueueVerify("开启检测器", 0x03EB, 1,
-                  [this]() { m_comm->enableDetector(true); });
-    emit deviceStateChanged("TCD", true);
+    // 批量写 0x03FF~0x0400：柱温箱温度 + 使能
+    QVector<quint16> ovenVals = {
+        static_cast<quint16>(m_settings.columnOvenTemp),
+        1
+    };
+    m_comm->writeMultipleRegisters(0x03FF, ovenVals, "初始设置: 柱温箱温度+使能");
+    enqueueVerifyRange("柱温箱设置", 0x03FF, ovenVals,
+                       [this, ovenVals]() { m_comm->writeMultipleRegisters(0x03FF, ovenVals, "重发: 柱温箱温度+使能"); });
+
+    // TCD 温度（单独写）
+    quint16 tcdTemp = static_cast<quint16>(m_settings.tcdTemp);
+    m_comm->setTcdTemperature(tcdTemp);
+    enqueueVerify("TCD温度", 0x03E8, tcdTemp,
+                  [this, tcdTemp]() { m_comm->setTcdTemperature(tcdTemp); });
+
+    // 批量写 0x0402~0x0403：流量电压1 + 流量电压2
+    QVector<quint16> flowVals = {
+        static_cast<quint16>(m_settings.carrierFlow1Voltage),
+        static_cast<quint16>(m_settings.carrierFlow2Voltage)
+    };
+    m_comm->writeMultipleRegisters(0x0402, flowVals, "初始设置: 流量电压1+流量电压2");
+    enqueueVerifyRange("流量电压设置", 0x0402, flowVals,
+                       [this, flowVals]() { m_comm->writeMultipleRegisters(0x0402, flowVals, "重发: 流量电压1+流量电压2"); });
 
     emit logMessage("自动流程", "初始设置命令已发出，等待验证...");
 }
 
 void AutoProcessManager::sendTestSequenceCommand(double elapsedMin)
 {
-    // 开始记录
     if (!m_recordStarted && elapsedMin >= m_settings.startRecordMin) {
         m_recordStarted = true;
         emit saveDataTriggered();
         emit logMessage("自动流程", "开始记录TCD数据");
     }
 
-    // 停止记录（只触发一次）
     if (m_recordStarted && !m_stopSaveSent && elapsedMin >= m_settings.stopRecordMin) {
         m_stopSaveSent = true;
         emit stopDataSaveTriggered();
         emit logMessage("自动流程", "停止记录TCD数据");
     }
 
-    // 六通阀开启（只执行一次）
     if (!m_valveOpenDone && elapsedMin >= m_settings.valveOpenMin) {
         m_valveOpenDone = true;
-
-        // 先开启电磁阀（bit0），不加入验证队列（直接发送）
+        // 先开启电磁阀（bit0），再开启六通阀
         m_comm->setValveBit(0, true);
-
-        // 再开启六通阀
         m_comm->setSixWayValve1(true);
         enqueueVerify("开启六通阀", 0x0404, 1,
                       [this]() { m_comm->setSixWayValve1(true); });
-
-        // 更新图形状态
         emit deviceStateChanged("电磁阀", true);
         emit deviceStateChanged("六通阀", true);
-
         emit logMessage("自动流程", "六通阀开启");
     }
 
-    // 六通阀关闭（只执行一次）
     if (m_valveOpenDone && !m_valveCloseDone && elapsedMin >= m_settings.valveCloseMin) {
         m_valveCloseDone = true;
-
-        // 先关闭电磁阀（bit0），不加入验证队列
         m_comm->setValveBit(0, false);
-
-        // 再关闭六通阀
         m_comm->setSixWayValve1(false);
         enqueueVerify("关闭六通阀", 0x0404, 0,
                       [this]() { m_comm->setSixWayValve1(false); });
-
-        // 更新图形状态
         emit deviceStateChanged("电磁阀", false);
         emit deviceStateChanged("六通阀", false);
-
         emit logMessage("自动流程", "六通阀关闭");
     }
 }
 
 void AutoProcessManager::beginCooling()
 {
-    // 若正在记录，先停止保存
     if (m_recordStarted && !m_stopSaveSent) {
         m_stopSaveSent = true;
         emit stopDataSaveTriggered();
     }
 
-    m_verifyQueue.clear();   // 清空可能残留的验证队列
+    m_verifyQueue.clear();
 
-    // 关闭检测器
-    m_comm->enableDetector(false);
-    enqueueVerify("关闭检测器", 0x03EB, 0,
-                  [this]() { m_comm->enableDetector(false); });
-
-    // 设置柱温箱冷却温度
-    m_comm->setColumnOven1Temperature(static_cast<quint16>(m_settings.coolDownTemp));
-    enqueueVerify("设置柱温箱冷却温度", 0x03FF, m_settings.coolDownTemp,
-                  [this]() { m_comm->setColumnOven1Temperature(m_settings.coolDownTemp); });
-
-    // 保持柱温箱开启以降温
-    m_comm->setColumnOvenEnable(true);
-    enqueueVerify("保持柱温箱开启", 0x0400, 1,
-                  [this]() { m_comm->setColumnOvenEnable(true); });
-
-    emit deviceStateChanged("TCD", false);
+    // 批量写 0x03FF~0x0400：柱温箱冷却温度 + 保持使能
+    QVector<quint16> ovenVals = {
+        static_cast<quint16>(m_settings.coolDownTemp),
+        1
+    };
+    m_comm->writeMultipleRegisters(0x03FF, ovenVals, "冷却: 柱温箱温度+使能");
+    enqueueVerifyRange("柱温箱冷却设置", 0x03FF, ovenVals,
+                       [this, ovenVals]() { m_comm->writeMultipleRegisters(0x03FF, ovenVals, "重发: 冷却柱温箱温度+使能"); });
 
     changeState(CoolingDown);
     emit logMessage("自动流程", "进入冷却阶段，目标温度 " + QString::number(m_settings.coolDownTemp) + " ℃");
@@ -316,8 +264,21 @@ void AutoProcessManager::enqueueVerify(const QString &name, quint16 address, qui
 {
     CommandToVerify cmd;
     cmd.name = name;
-    cmd.address = address;
-    cmd.expected = expected;
+    cmd.startAddr = address;
+    cmd.expectedValues = QVector<quint16>{expected};
+    cmd.resend = resend;
+    cmd.retryCount = 0;
+    m_verifyQueue.append(cmd);
+}
+
+void AutoProcessManager::enqueueVerifyRange(const QString &name, quint16 startAddr,
+                                            const QVector<quint16> &expectedValues,
+                                            std::function<void()> resend)
+{
+    CommandToVerify cmd;
+    cmd.name = name;
+    cmd.startAddr = startAddr;
+    cmd.expectedValues = expectedValues;
     cmd.resend = resend;
     cmd.retryCount = 0;
     m_verifyQueue.append(cmd);
@@ -325,18 +286,16 @@ void AutoProcessManager::enqueueVerify(const QString &name, quint16 address, qui
 
 void AutoProcessManager::processVerifyQueue()
 {
-    // 如果队列为空或已有读取请求在途，则本次不处理
     if (m_verifyQueue.isEmpty() || m_verifyReadPending)
         return;
 
+    m_verifyReadPending = true;
     CommandToVerify cmd = m_verifyQueue.first();
     QString name = cmd.name;
+    quint16 startAddr = cmd.startAddr;
+    quint16 count = static_cast<quint16>(cmd.expectedValues.size());
 
-    // 标记读取进行中，防止并发
-    m_verifyReadPending = true;
-
-    m_comm->requestRegisterRead(cmd.address, [this, name](quint16 actual) {
-        // 读取完成，清除标记
+    m_comm->requestRegisterReadRange(startAddr, count, [this, name](const QVector<quint16> &actual) {
         m_verifyReadPending = false;
 
         int idx = -1;
@@ -346,13 +305,21 @@ void AutoProcessManager::processVerifyQueue()
                 break;
             }
         }
-
-        if (idx == -1)
-            return;
+        if (idx == -1) return;
 
         CommandToVerify &cmdRef = m_verifyQueue[idx];
 
-        if (actual == cmdRef.expected) {
+        bool allMatch = (actual.size() >= cmdRef.expectedValues.size());
+        if (allMatch) {
+            for (int i = 0; i < cmdRef.expectedValues.size(); ++i) {
+                if (actual[i] != cmdRef.expectedValues[i]) {
+                    allMatch = false;
+                    break;
+                }
+            }
+        }
+
+        if (allMatch) {
             m_verifyQueue.removeAt(idx);
             emit logMessage("自动流程", QString("%1 成功").arg(name));
         } else {
@@ -366,7 +333,6 @@ void AutoProcessManager::processVerifyQueue()
             }
         }
 
-        // 队列已空，根据当前状态进行切换
         if (m_verifyQueue.isEmpty()) {
             if (m_state == SettingVerify) {
                 changeState(Heating);

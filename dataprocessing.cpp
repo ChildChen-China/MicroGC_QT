@@ -452,27 +452,27 @@ void DataProcessingDialog::setupPlots()
     // 添加6条曲线并设置名称和颜色
     m_plot->addGraph();
     m_plot->graph(0)->setName("A滤波前");
-    m_plot->graph(0)->setPen(QPen(QColor("#0000FF"), 2)); // 深蓝
+    m_plot->graph(0)->setPen(QPen(QColor("#0000FF"), 1)); // 深蓝
 
     m_plot->addGraph();
     m_plot->graph(1)->setName("A滤波后");
-    m_plot->graph(1)->setPen(QPen(QColor("#87CEEB"), 2)); // 浅蓝
+    m_plot->graph(1)->setPen(QPen(QColor("#87CEEB"), 1)); // 浅蓝
 
     m_plot->addGraph();
     m_plot->graph(2)->setName("B滤波前");
-    m_plot->graph(2)->setPen(QPen(QColor("#FF0000"), 2)); // 深红
+    m_plot->graph(2)->setPen(QPen(QColor("#FF0000"), 1)); // 深红
 
     m_plot->addGraph();
     m_plot->graph(3)->setName("B滤波后");
-    m_plot->graph(3)->setPen(QPen(QColor("#FFA07A"), 2)); // 浅红
+    m_plot->graph(3)->setPen(QPen(QColor("#FFA07A"), 1)); // 浅红
 
     m_plot->addGraph();
     m_plot->graph(4)->setName("A-B滤波前");
-    m_plot->graph(4)->setPen(QPen(QColor("#008000"), 2)); // 深绿
+    m_plot->graph(4)->setPen(QPen(QColor("#008000"), 1)); // 深绿
 
     m_plot->addGraph();
     m_plot->graph(5)->setName("A-B滤波后");
-    m_plot->graph(5)->setPen(QPen(QColor("#90EE90"), 2)); // 浅绿
+    m_plot->graph(5)->setPen(QPen(QColor("#90EE90"), 1)); // 浅绿
 
     // ========== 性能优化 ==========
     m_plot->setPlottingHints(QCP::phFastPolylines);
@@ -483,10 +483,10 @@ void DataProcessingDialog::setupPlots()
     QFont legendFont;
     legendFont.setFamily("Arial");
     legendFont.setPointSize(8);
-    legendFont.setWeight(QFont::Light);          // 使用细体字重
+    legendFont.setWeight(QFont::Light);
     m_plot->legend->setFont(legendFont);
     m_plot->legend->setVisible(true);
-    m_plot->legend->setBrush(QBrush(QColor(255,255,255,180))); // 半透明背景
+    m_plot->legend->setBrush(QBrush(QColor(255,255,255,180)));
     m_plot->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
 
     m_plot->xAxis->setRange(0, 5);
