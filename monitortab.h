@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 
 class QVBoxLayout;
 class QLineEdit;
@@ -86,6 +87,7 @@ public slots:
     void setChannelBVisible(bool visible);
     void setChannelABVisible(bool visible);
     void applyGlobalParameters();
+    void setTcdPowered(bool powered);   // ← 新增这一行
 
 signals:
     void logMessage(const QString &type, const QString &event);
@@ -141,9 +143,9 @@ private:
     QSpinBox *m_tempEdit;
     QSpinBox *m_powerAEdit;
     QSpinBox *m_powerBEdit;
-    QSpinBox *m_levelAEdit;
-    QSpinBox *m_levelBEdit;
-    QSpinBox *m_levelABEdit;
+    QDoubleSpinBox  *m_levelAEdit;
+    QDoubleSpinBox  *m_levelBEdit;
+    QDoubleSpinBox  *m_levelABEdit;
     QSpinBox *m_zsEdit;
     QComboBox *m_precisionEdit;
     QPushButton *m_rfBtn;
@@ -181,6 +183,10 @@ private:
     bool m_powerCheckIsA = false;
     int m_powerCheckAttempts = 0;
     bool m_powerCheckReplyReceived = false;
+
+    bool m_tcdPowered = false;        // TCD 电源当前状态
+    qint64 m_tcdActiveMs = 0;         // 累积的有效采样时间（毫秒）
+    qint64 m_tcdLastTick = 0;         // 当前活动段的起点 tick
 };
 
 #endif // MONITORTAB_H

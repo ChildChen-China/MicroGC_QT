@@ -30,7 +30,7 @@
 #include <QPixmap>
 #include <QColor>
 #include <QPen>
-
+#include <QDoubleSpinBox>
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_tabs(nullptr)
@@ -48,7 +48,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_checkActive(false)
 {
     setWindowTitle("MicroGC");
-    resize(1500, 900);
+    resize(1200, 900);
 
     m_comm = new Communication(this);
     m_log = new LogWidget(this);
@@ -119,6 +119,15 @@ MainWindow::MainWindow(QWidget *parent)
     createActions();
     createTabs();
 
+    // ================= 启动时从 QSettings 加载采集点数和均点设置 =================
+    if (m_monitorTab) {
+        QSettings settings("MyCompany", "MicroGC");
+        int collectPoints = settings.value("global/collectPoints", 1000).toInt();
+        int averagePoints = settings.value("global/averagePoints", 5).toInt();
+        m_monitorTab->setCollectPoints(collectPoints);
+        m_monitorTab->setAveragePoints(averagePoints);
+    }
+
     m_tcdCheckTimer->start();
 
     connect(m_autoProcess, &AutoProcessManager::saveDataTriggered,
@@ -133,6 +142,31 @@ MainWindow::MainWindow(QWidget *parent)
     layout->addWidget(m_log, 0);
     setCentralWidget(central);
 }
+
+class StayOpenMenu : public QMenu
+{
+public:
+    explicit StayOpenMenu(QWidget *parent = nullptr) : QMenu(parent) {}
+
+    void setStayOpenActions(const QList<QAction*> &actions) {
+        for (QAction *a : actions) m_stayOpen.insert(a);
+    }
+
+protected:
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        QAction *action = activeAction();
+        if (action && m_stayOpen.contains(action)) {
+            // 手动触发 action，不调用基类，菜单保持打开
+            action->trigger();
+            return;
+        }
+        QMenu::mouseReleaseEvent(e);
+    }
+
+private:
+    QSet<QAction*> m_stayOpen;
+};
 
 void MainWindow::createActions()
 {
@@ -152,7 +186,7 @@ void MainWindow::createActions()
     settingsBtn->setIcon(style()->standardIcon(QStyle::SP_FileDialogInfoView));
     settingsBtn->setPopupMode(QToolButton::InstantPopup);
     settingsBtn->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    QMenu *settingsMenu = new QMenu(settingsBtn);
+    StayOpenMenu *settingsMenu = new StayOpenMenu(settingsBtn);
     QAction *globalSettingsAct = settingsMenu->addAction("全局参数设置");
     QAction *autoSettingsAct = settingsMenu->addAction("自动流程设置");
     settingsMenu->addSeparator();
@@ -164,6 +198,10 @@ void MainWindow::createActions()
     hideABAct->setCheckable(true);
     QAction *hideLogAct = settingsMenu->addAction("隐藏日志");
     hideLogAct->setCheckable(true);
+
+    // 四个勾选项点击后菜单保持打开，可连续勾选
+    settingsMenu->setStayOpenActions({hideAAct, hideBAct, hideABAct, hideLogAct});
+
     settingsBtn->setMenu(settingsMenu);
     toolbar->addWidget(settingsBtn);
 
@@ -193,6 +231,7 @@ void MainWindow::createActions()
     });
     connect(hideLogAct, &QAction::toggled, this, &MainWindow::toggleLogVisible);
 }
+
 
 void MainWindow::createTabs()
 {
@@ -263,6 +302,7 @@ void MainWindow::onCommunicationDisconnected()
     m_comm->stopPolling();
     m_log->appendLog("通信", "连接断开");
 
+    // 连接断开时，将连接按钮图标设为黑色
     if (m_connectAction) {
         QPixmap blackIcon(32, 32);
         blackIcon.fill(Qt::transparent);
@@ -274,9 +314,15 @@ void MainWindow::onCommunicationDisconnected()
         m_connectAction->setIcon(QIcon(blackIcon));
     }
 
+    // 断开连接后，TCD 电源视为关闭
     m_tcdPowered = false;
     m_comm->setTcdPowered(false);
     updateTcdPowerIcon();
+
+    // 通知 MonitorTab 停止记录时间轴（避免断开后继续累积）
+    if (m_monitorTab) {
+        m_monitorTab->setTcdPowered(false);
+    }
 }
 
 void MainWindow::openConnectionDialog()
@@ -286,10 +332,16 @@ void MainWindow::openConnectionDialog()
     dlg.setMinimumWidth(360);
 
     QFormLayout form(&dlg);
-    QLineEdit *ipEdit = new QLineEdit("192.168.10.100", &dlg);
+
+    // 从 QSettings 读取上次保存的 IP 和端口
+    QSettings settings("MyCompany", "MicroGC");
+    QString savedIp = settings.value("connection/ip", "192.168.10.100").toString();
+    int savedPort = settings.value("connection/port", 502).toInt();
+
+    QLineEdit *ipEdit = new QLineEdit(savedIp, &dlg);
     QSpinBox *portSpin = new QSpinBox(&dlg);
     portSpin->setRange(1, 65535);
-    portSpin->setValue(502);
+    portSpin->setValue(savedPort);
 
     form.addRow("IP 地址:", ipEdit);
     form.addRow("端口:", portSpin);
@@ -300,6 +352,11 @@ void MainWindow::openConnectionDialog()
     connect(&buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
     if (dlg.exec() == QDialog::Accepted) {
+        // 保存本次连接设置到 QSettings
+        settings.setValue("connection/ip", ipEdit->text());
+        settings.setValue("connection/port", portSpin->value());
+        settings.sync();
+
         m_comm->connectToDevice(ipEdit->text(), portSpin->value());
         m_log->appendLog("连接", QString("尝试连接 %1:%2").arg(ipEdit->text()).arg(portSpin->value()));
     }
@@ -326,10 +383,12 @@ void MainWindow::openSettings()
 
     QSpinBox *flow1Spin = new QSpinBox(instrGroup);
     flow1Spin->setRange(1, 1000);
+    flow1Spin->setSuffix(" 电压");
     instrForm->addRow("流量器A电压:", flow1Spin);
 
     QSpinBox *flow2Spin = new QSpinBox(instrGroup);
     flow2Spin->setRange(1, 1000);
+    flow2Spin->setSuffix(" 电压");
     instrForm->addRow("流量器B电压:", flow2Spin);
 
     QSpinBox *ovenTempSpin = new QSpinBox(instrGroup);
@@ -340,6 +399,7 @@ void MainWindow::openSettings()
     QSpinBox *tcdTempSpin = new QSpinBox(instrGroup);
     tcdTempSpin->setRange(0, 500);
     tcdTempSpin->setSuffix(" ℃");
+    tcdTempSpin->setToolTip("TS 98\r  设置TCD温度");
     instrForm->addRow("TCD温度:", tcdTempSpin);
 
     mainLayout->addWidget(instrGroup);
@@ -374,18 +434,30 @@ void MainWindow::openSettings()
     precisionCombo->setToolTip("PF 0.05\r   设置最小精度[]");
     tcdForm->addRow("最小精度:", precisionCombo);
 
-    QSpinBox *levelASpin = new QSpinBox(tcdGroup);
-    levelASpin->setRange(-12, 12);
+    // A 电平
+    QDoubleSpinBox *levelASpin = new QDoubleSpinBox(tcdGroup);
+    levelASpin->setRange(-1.2, 1.2);
+    levelASpin->setDecimals(1);
+    levelASpin->setSingleStep(0.1);
+    levelASpin->setSuffix(" V");
     levelASpin->setToolTip("ZA 0.1\r");
     tcdForm->addRow("A电平:", levelASpin);
 
-    QSpinBox *levelBSpin = new QSpinBox(tcdGroup);
-    levelBSpin->setRange(-12, 12);
+    // B 电平
+    QDoubleSpinBox *levelBSpin = new QDoubleSpinBox(tcdGroup);
+    levelBSpin->setRange(-1.2, 1.2);
+    levelBSpin->setDecimals(1);
+    levelBSpin->setSingleStep(0.1);
+    levelBSpin->setSuffix(" V");
     levelBSpin->setToolTip("ZB 0.1\r");
     tcdForm->addRow("B电平:", levelBSpin);
 
-    QSpinBox *levelABSpin = new QSpinBox(tcdGroup);
-    levelABSpin->setRange(-12, 12);
+    // AB 电平
+    QDoubleSpinBox *levelABSpin = new QDoubleSpinBox(tcdGroup);
+    levelABSpin->setRange(-1.2, 1.2);
+    levelABSpin->setDecimals(1);
+    levelABSpin->setSingleStep(0.1);
+    levelABSpin->setSuffix(" V");
     levelABSpin->setToolTip("ZR 0.1\r");
     tcdForm->addRow("AB电平:", levelABSpin);
 
@@ -419,9 +491,11 @@ void MainWindow::openSettings()
     int prec = settings.value("global/precision", 1).toInt();
     int pid = precisionCombo->findData(prec);
     if (pid >= 0) precisionCombo->setCurrentIndex(pid);
-    levelASpin->setValue(settings.value("global/levelA", 0).toInt());
-    levelBSpin->setValue(settings.value("global/levelB", 0).toInt());
-    levelABSpin->setValue(settings.value("global/levelAB", 0).toInt());
+
+    // 电平从 QSettings 中读回 ×10 后的整数值，显示时除以 10
+    levelASpin->setValue(settings.value("global/levelA", 0).toInt() / 10.0);
+    levelBSpin->setValue(settings.value("global/levelB", 0).toInt() / 10.0);
+    levelABSpin->setValue(settings.value("global/levelAB", 0).toInt() / 10.0);
 
     // ================= 内部“设置”按钮 =================
     connect(setCollectBtn, &QPushButton::clicked, this, [this, collectPointsSpin]() {
@@ -441,6 +515,7 @@ void MainWindow::openSettings()
 
     // ================= 应用按钮 =================
     connect(applyBtn, &QPushButton::clicked, &dlg, [&]() {
+        // 1. 保存到 QSettings
         settings.setValue("global/flow1Voltage", flow1Spin->value());
         settings.setValue("global/flow2Voltage", flow2Spin->value());
         settings.setValue("global/ovenTemp", ovenTempSpin->value());
@@ -448,34 +523,39 @@ void MainWindow::openSettings()
         settings.setValue("global/collectPoints", collectPointsSpin->value());
         settings.setValue("global/averagePoints", averageSpin->value());
         settings.setValue("global/precision", precisionCombo->currentData().toInt());
-        settings.setValue("global/levelA", levelASpin->value());
-        settings.setValue("global/levelB", levelBSpin->value());
-        settings.setValue("global/levelAB", levelABSpin->value());
+        // 电平保存为 ×10 后的整数值
+        settings.setValue("global/levelA", qRound(levelASpin->value() * 10.0));
+        settings.setValue("global/levelB", qRound(levelBSpin->value() * 10.0));
+        settings.setValue("global/levelAB", qRound(levelABSpin->value() * 10.0));
         settings.sync();
 
+        // 2. 更新 MonitorTab 界面控件值
         if (m_monitorTab) {
             m_monitorTab->setParameter("temperature", tcdTempSpin->value());
-            m_monitorTab->setParameter("levelA", levelASpin->value());
-            m_monitorTab->setParameter("levelB", levelBSpin->value());
-            m_monitorTab->setParameter("levelAB", levelABSpin->value());
+            m_monitorTab->setParameter("levelA", qRound(levelASpin->value() * 10.0));
+            m_monitorTab->setParameter("levelB", qRound(levelBSpin->value() * 10.0));
+            m_monitorTab->setParameter("levelAB", qRound(levelABSpin->value() * 10.0));
             m_monitorTab->setParameter("precision", precisionCombo->currentData().toInt());
             m_monitorTab->setCollectPoints(collectPointsSpin->value());
             m_monitorTab->setAveragePoints(averageSpin->value());
             m_monitorTab->applyGlobalParameters();
         }
 
+        // 3. 延迟发送流量电压和柱温箱
         int flow1Val = flow1Spin->value();
         int flow2Val = flow2Spin->value();
         int ovenTemp = ovenTempSpin->value();
         QTimer::singleShot(1500, this, [this, flow1Val, flow2Val, ovenTemp]() {
             if (!m_comm) return;
 
+            // 批量写流量电压 0x0402~0x0403
             QVector<quint16> flowVals = {
                 static_cast<quint16>(flow1Val),
                 static_cast<quint16>(flow2Val)
             };
             m_comm->writeMultipleRegisters(0x0402, flowVals, "全局设置: 流量电压1+电压2");
 
+            // 柱温箱温度+使能
             m_comm->requestRegisterRead(0x0400, [this, ovenTemp](quint16) {
                 QVector<quint16> ovenVals = {
                     static_cast<quint16>(ovenTemp),
@@ -640,19 +720,20 @@ void MainWindow::checkTcdPowerStatus()
         m_tcdPowered = false;
         m_comm->setTcdPowered(false);
         updateTcdPowerIcon();
+        if (m_monitorTab) m_monitorTab->setTcdPowered(false);   // 新增
         return;
     }
 
     m_checkActive = true;
     m_tcdReplyReceived = false;
 
-    // 读取 TCD 测量温度 LL（0x0009），有回复表示 TCD 通电
     m_comm->requestRegisterRead(0x0009, [this](quint16) {
         if (m_checkActive) {
             m_checkActive = false;
             m_tcdPowered = true;
             m_comm->setTcdPowered(true);
             updateTcdPowerIcon();
+            if (m_monitorTab) m_monitorTab->setTcdPowered(true);   // 新增
         }
     });
 
@@ -662,6 +743,7 @@ void MainWindow::checkTcdPowerStatus()
             m_tcdPowered = false;
             m_comm->setTcdPowered(false);
             updateTcdPowerIcon();
+            if (m_monitorTab) m_monitorTab->setTcdPowered(false);   // 新增
         }
     });
 }

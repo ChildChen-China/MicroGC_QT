@@ -3,6 +3,8 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFormLayout>
+#include <QGridLayout>
+#include <QGroupBox>
 #include <QPushButton>
 #include <QButtonGroup>
 #include <QRadioButton>
@@ -25,9 +27,9 @@
 #include "interactiveplot.h"
 #include "qcustomplot.h"
 
-//-------------------------------------------------------------
+//==========================================================
 // IntegralSettingsDialog 实现
-//-------------------------------------------------------------
+//==========================================================
 IntegralSettingsDialog::IntegralSettingsDialog(QWidget *parent)
     : QDialog(parent)
 {
@@ -118,12 +120,12 @@ void IntegralSettingsDialog::applySettings()
                          m_slopeThreshold->value(),
                          m_advance->value(),
                          m_delay->value());
-    hide(); // 应用后隐藏
+    hide();
 }
 
-//-------------------------------------------------------------
+//==========================================================
 // IntegrationWorker 实现
-//-------------------------------------------------------------
+//==========================================================
 IntegrationWorker::IntegrationWorker(QObject *parent) : QObject(parent)
 {
 }
@@ -161,8 +163,8 @@ void IntegrationWorker::setParameters(double waveWidth, double slopeThreshold,
 void IntegrationWorker::processAutoIntegration()
 {
     QList<QStringList> results;
+    m_warnings.clear();
 
-    // 根据可见性选择通道
     if (m_visibility.value("rawA", true)) {
         integrateChannel(m_time, m_rawA, "A滤波前", m_integralType, results);
     }
@@ -183,6 +185,9 @@ void IntegrationWorker::processAutoIntegration()
     }
 
     emit integrationFinished(results);
+    if (!m_warnings.isEmpty()) {
+        emit warningsGenerated(m_warnings);
+    }
 }
 
 void IntegrationWorker::integrateChannel(const QVector<double> &x, const QVector<double> &y,
@@ -190,78 +195,115 @@ void IntegrationWorker::integrateChannel(const QVector<double> &x, const QVector
                                          QList<QStringList> &results)
 {
     int n = x.size();
-    if (n < 3) return;
+    if (n < 10) return;
+
+    const double riseThreshold = m_slopeThreshold;
+    const double fallThreshold = m_slopeThreshold;
+    const int    confirmPoints = 3;   // 连续确认点数
+    const int    flatPoints   = 3;    // 判定平缓所需的连续点数
 
     int i = 1;
     int peakCount = 0;
-    while (i < n - 1) {
-        double dx = x[i] - x[i-1];
-        if (qFuzzyIsNull(dx)) { i++; continue; }
-        double slope = (y[i] - y[i-1]) / dx;
 
-        if (slope > m_slopeThreshold) {
-            // 向前寻找起点
-            int startIdx = i - 1;
-            while (startIdx > 0) {
-                double dxPrev = x[startIdx] - x[startIdx-1];
-                if (qFuzzyIsNull(dxPrev)) break;
-                double s = (y[startIdx] - y[startIdx-1]) / dxPrev;
-                if (s <= m_slopeThreshold) break;
-                startIdx--;
-            }
+    while (i < n - 1)
+    {
+        if (qIsNaN(y[i]) || qIsNaN(y[i-1])) { i++; continue; }
 
-            // 寻找顶点
-            int peakIdx = startIdx;
-            while (peakIdx < n - 1) {
-                double dxNext = x[peakIdx+1] - x[peakIdx];
-                if (qFuzzyIsNull(dxNext)) break;
-                double s = (y[peakIdx+1] - y[peakIdx]) / dxNext;
-                if (s <= 0) break;
-                peakIdx++;
-            }
-            double retentionTime = x[peakIdx];
-
-            // 寻找终点
-            int endIdx = peakIdx + 1;
-            if (endIdx >= n) endIdx = n - 1;
-            while (endIdx < n - 1) {
-                double dxEnd = x[endIdx] - x[endIdx-1];
-                if (qFuzzyIsNull(dxEnd)) break;
-                double s = (y[endIdx] - y[endIdx-1]) / dxEnd;
-                if (s >= -m_slopeThreshold) break;
-                endIdx++;
-            }
-
-            // ========== 波宽过滤（新添加） ==========
-            double rawPeakWidth = x[endIdx] - x[startIdx];   // 原始峰宽，不含提前/延后
-            if (rawPeakWidth < m_waveWidth) {
-                i = endIdx + 1;
-                continue;   // 跳过窄峰
-            }
-            // =======================================
-
-            // 应用提前和延后量
-            double startX = x[startIdx] - m_advance;
-            double endX = x[endIdx] + m_delay;
-
-            // 计算面积（带基线扣除）
-            double area = calculateArea(x, y, startIdx, endIdx, type);
-
-            // 生成结果行
-            QStringList row;
-            row << "自动积分"
-                << QString("%1 峰%2").arg(channelName).arg(++peakCount)
-                << QString::number(startX, 'f', 3)
-                << QString::number(endX, 'f', 3)
-                << QString("%1（%2）").arg(channelName).arg(type)
-                << QString::number(retentionTime, 'f', 3)
-                << QString::number(area, 'f', 3);
-            results.append(row);
-
-            i = endIdx + 1;
-        } else {
-            i++;
+        // ========== 第1步：找 SS 点（容忍平台） ==========
+        int riseCount = 0;
+        for (int k = 0; k < confirmPoints; ++k)
+        {
+            if (i + k >= n) break;
+            double d = x[i+k] - x[i+k-1];
+            if (qFuzzyIsNull(d)) continue;
+            double s = (y[i+k] - y[i+k-1]) / d;
+            if (s > riseThreshold) riseCount++;
         }
+        if (riseCount < confirmPoints - 1) { i++; continue; }
+
+        int ssIdx = i;
+
+        // ========== 第2步：向前找 S 点 ==========
+        int startIdx = ssIdx;
+        while (startIdx > 1)
+        {
+            double d = x[startIdx] - x[startIdx-1];
+            if (qFuzzyIsNull(d)) { startIdx--; continue; }
+            double s = (y[startIdx] - y[startIdx-1]) / d;
+            if (s <= riseThreshold * 0.5) break;
+            startIdx--;
+        }
+        startIdx = qMax(0, startIdx - 1);
+
+        // ========== 第3步：找峰顶（跟踪局部最大值） ==========
+        int peakIdx = startIdx;
+        double maxY = y[startIdx];
+        double dropThreshold = 2.0;
+
+        for (int k = startIdx + 1; k < n; ++k)
+        {
+            if (qIsNaN(y[k])) break;
+            if (y[k] >= maxY) { maxY = y[k]; peakIdx = k; }
+            else if (maxY - y[k] >= dropThreshold) break;
+        }
+
+        double peakHeight = maxY - y[startIdx];
+        if (peakHeight < 1.0) { i = peakIdx + 1; continue; }
+
+        // ========== 第4步：找 ES 点（容忍平台） ==========
+        int esIdx = -1;
+        for (int k = peakIdx + 1; k < n - confirmPoints; ++k)
+        {
+            int fallCount = 0;
+            for (int m = 0; m < confirmPoints; ++m)
+            {
+                double d = x[k+m] - x[k+m-1];
+                if (qFuzzyIsNull(d)) continue;
+                double s = (y[k+m] - y[k+m-1]) / d;
+                if (s < -fallThreshold) fallCount++;
+            }
+            if (fallCount >= confirmPoints - 1) { esIdx = k; break; }
+        }
+        if (esIdx < 0) { i = peakIdx + 1; continue; }
+
+        // ========== 第5步：从 ES 找 E 点（要求连续平缓） ==========
+        int endIdx = esIdx;
+        while (endIdx < n - flatPoints)
+        {
+            bool isFlat = true;
+            for (int m = 0; m < flatPoints; ++m)
+            {
+                double d = x[endIdx+1+m] - x[endIdx+m];
+                if (qFuzzyIsNull(d)) continue;
+                double s = (y[endIdx+1+m] - y[endIdx+m]) / d;
+                if (qAbs(s) > riseThreshold * 0.3) { isFlat = false; break; }
+            }
+            if (isFlat) break;
+            endIdx++;
+        }
+        if (endIdx >= n) endIdx = n - 1;
+
+        // 波宽过滤
+        double rawPeakWidth = x[endIdx] - x[startIdx];
+        if (rawPeakWidth < m_waveWidth) { i = endIdx + 1; continue; }
+
+        // 记录结果
+        double retentionTime = x[peakIdx];
+        double startX = x[startIdx] - m_advance;
+        double endX   = x[endIdx] + m_delay;
+        double area = calculateArea(x, y, startIdx, endIdx, type);
+
+        QStringList row;
+        row << "自动积分"
+            << QString("%1 峰%2").arg(channelName).arg(++peakCount)
+            << QString::number(startX, 'f', 3)
+            << QString::number(endX, 'f', 3)
+            << QString("%1（%2）").arg(channelName).arg(type)
+            << QString::number(retentionTime, 'f', 3)
+            << QString::number(area, 'f', 3);
+        results.append(row);
+
+        i = endIdx + 1;
     }
 }
 
@@ -269,31 +311,87 @@ double IntegrationWorker::calculateArea(const QVector<double> &x, const QVector<
                                         int startIdx, int endIdx,
                                         const QString &type)
 {
+    // ========== 边界保护 ==========
+    if (startIdx < 0 || endIdx < 0) return 0.0;
     if (startIdx >= endIdx || endIdx >= x.size()) return 0.0;
 
-    // 统一使用线性基线扣除（无论斜切还是竖切）
+    // 检查 NaN
+    for (int i = startIdx; i <= endIdx; ++i)
+        if (qIsNaN(y[i])) return 0.0;
+
     double x0 = x[startIdx];
     double y0 = y[startIdx];
     double x1 = x[endIdx];
     double y1 = y[endIdx];
-    double slope = (y1 - y0) / (x1 - x0);
 
-    double area = 0.0;
-    for (int i = startIdx; i < endIdx; ++i) {
-        double h = x[i+1] - x[i];
-        double baseline1 = y0 + slope * (x[i] - x0);
-        double baseline2 = y0 + slope * (x[i+1] - x0);
-        double val1 = y[i] - baseline1;
-        double val2 = y[i+1] - baseline2;
-        area += h * (val1 + val2) / 2.0;
+    // ========== 构建基线 ==========
+    // 斜切：起止两点连线
+    // 竖切：水平基线，取 min(y0, y1)
+    double slope = 0.0;
+    double baselineY = 0.0;
+
+    if (type.contains("竖切")) {
+        slope = 0.0;
+        baselineY = qMin(y0, y1);
+    } else {
+        if (qAbs(x1 - x0) < 1e-9) {
+            slope = 0.0;
+        } else {
+            slope = (y1 - y0) / (x1 - x0);
+        }
+        baselineY = y0;
     }
 
-    return area;
+    // ========== 逐段积分 ==========
+    double areaRaw = 0.0;
+    double areaClipped = 0.0;
+
+    for (int i = startIdx; i < endIdx; ++i)
+    {
+        double h = x[i+1] - x[i];
+
+        double baseline1, baseline2;
+        if (type.contains("竖切")) {
+            baseline1 = baselineY;
+            baseline2 = baselineY;
+        } else {
+            baseline1 = baselineY + slope * (x[i]   - x0);
+            baseline2 = baselineY + slope * (x[i+1] - x0);
+        }
+
+        double val1 = y[i]   - baseline1;
+        double val2 = y[i+1] - baseline2;
+
+        areaRaw += h * (val1 + val2) / 2.0;
+
+        double cval1 = (val1 < 0) ? 0.0 : val1;
+        double cval2 = (val2 < 0) ? 0.0 : val2;
+        areaClipped += h * (cval1 + cval2) / 2.0;
+    }
+
+    // ========== 差异警告（收集到 m_warnings，由 processAutoIntegration 统一发出） ==========
+    if (areaClipped > 1e-9) {
+        double diffRatio = qAbs(areaRaw - areaClipped) / areaClipped;
+        if (diffRatio > 0.1) {
+            m_warnings.append(QString("峰[%1, %2] 原始面积=%3 钳后面积=%4 差异过大，基线可能不准")
+                                  .arg(x0, 0, 'f', 3)
+                                  .arg(x1, 0, 'f', 3)
+                                  .arg(areaRaw, 0, 'f', 3)
+                                  .arg(areaClipped, 0, 'f', 3));
+        }
+    } else if (qAbs(areaRaw) > 1e-9) {
+        m_warnings.append(QString("峰[%1, %2] 原始面积=%3 钳后面积=0，基线完全错误")
+                              .arg(x0, 0, 'f', 3)
+                              .arg(x1, 0, 'f', 3)
+                              .arg(areaRaw, 0, 'f', 3));
+    }
+
+    return areaClipped;
 }
 
-//-------------------------------------------------------------
+//==========================================================
 // DataProcessingDialog 实现
-//-------------------------------------------------------------
+//==========================================================
 DataProcessingDialog::DataProcessingDialog(QWidget *parent)
     : QDialog(parent)
     , m_plot(nullptr)
@@ -314,7 +412,6 @@ DataProcessingDialog::DataProcessingDialog(QWidget *parent)
     resize(1200, 800);
     setAttribute(Qt::WA_DeleteOnClose);
 
-    // 初始化可见性
     m_visibility["rawA"] = true;
     m_visibility["filtA"] = true;
     m_visibility["rawB"] = true;
@@ -348,7 +445,6 @@ DataProcessingDialog::DataProcessingDialog(QWidget *parent)
     btnLayout->addWidget(restoreBtn);
     btnLayout->addSpacing(10);
 
-    // 缩放模式按钮
     QRadioButton *zoomX = new QRadioButton("X缩放", this);
     QRadioButton *zoomY = new QRadioButton("Y缩放", this);
     QRadioButton *zoomXY = new QRadioButton("XY缩放", this);
@@ -409,9 +505,9 @@ DataProcessingDialog::DataProcessingDialog(QWidget *parent)
     m_resultTable->setMinimumHeight(180);
     mainLayout->addWidget(m_resultTable, 0);
 
-    // 创建积分设置对话框（非模态）
+    // 积分设置对话框
     m_settingsDialog = new IntegralSettingsDialog(this);
-    m_settingsDialog->setAttribute(Qt::WA_DeleteOnClose, false); // 手动管理
+    m_settingsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
 
     // 信号连接
     connect(openBtn, &QPushButton::clicked, this, &DataProcessingDialog::openFile);
@@ -434,6 +530,24 @@ DataProcessingDialog::DataProcessingDialog(QWidget *parent)
     connect(this, &DataProcessingDialog::destroyed, m_thread, &QThread::quit);
     connect(m_thread, &QThread::finished, m_thread, &QThread::deleteLater);
     m_thread->start();
+
+    // ========== 自动积分警告弹窗 ==========
+    connect(m_worker, &IntegrationWorker::warningsGenerated,
+            this, [this](const QList<QString> &warnings) {
+                if (warnings.isEmpty()) return;
+
+                QString text = QString("自动积分过程中发现 %1 处基线异常：\n\n").arg(warnings.size());
+                int showCount = qMin(10, warnings.size());
+                for (int i = 0; i < showCount; ++i) {
+                    text += warnings.at(i) + "\n";
+                }
+                if (warnings.size() > showCount) {
+                    text += QString("\n...（共 %1 条，仅显示前 %2 条）")
+                                .arg(warnings.size()).arg(showCount);
+                }
+                QMessageBox::warning(this, "积分警告", text);
+            },
+            Qt::QueuedConnection);
 }
 
 DataProcessingDialog::~DataProcessingDialog()
@@ -446,40 +560,35 @@ DataProcessingDialog::~DataProcessingDialog()
 
 void DataProcessingDialog::setupPlots()
 {
-    // 清除旧曲线
     m_plot->clearGraphs();
 
-    // 添加6条曲线并设置名称和颜色
     m_plot->addGraph();
     m_plot->graph(0)->setName("A滤波前");
-    m_plot->graph(0)->setPen(QPen(QColor("#0000FF"), 1)); // 深蓝
+    m_plot->graph(0)->setPen(QPen(QColor("#0000FF"), 1));
 
     m_plot->addGraph();
     m_plot->graph(1)->setName("A滤波后");
-    m_plot->graph(1)->setPen(QPen(QColor("#87CEEB"), 1)); // 浅蓝
+    m_plot->graph(1)->setPen(QPen(QColor("#87CEEB"), 1));
 
     m_plot->addGraph();
     m_plot->graph(2)->setName("B滤波前");
-    m_plot->graph(2)->setPen(QPen(QColor("#FF0000"), 1)); // 深红
+    m_plot->graph(2)->setPen(QPen(QColor("#FF0000"), 1));
 
     m_plot->addGraph();
     m_plot->graph(3)->setName("B滤波后");
-    m_plot->graph(3)->setPen(QPen(QColor("#FFA07A"), 1)); // 浅红
+    m_plot->graph(3)->setPen(QPen(QColor("#FFA07A"), 1));
 
     m_plot->addGraph();
     m_plot->graph(4)->setName("A-B滤波前");
-    m_plot->graph(4)->setPen(QPen(QColor("#008000"), 1)); // 深绿
+    m_plot->graph(4)->setPen(QPen(QColor("#008000"), 1));
 
     m_plot->addGraph();
     m_plot->graph(5)->setName("A-B滤波后");
-    m_plot->graph(5)->setPen(QPen(QColor("#90EE90"), 1)); // 浅绿
+    m_plot->graph(5)->setPen(QPen(QColor("#90EE90"), 1));
 
-    // ========== 性能优化 ==========
     m_plot->setPlottingHints(QCP::phFastPolylines);
     m_plot->setNoAntialiasingOnDrag(true);
-    // ================================
 
-    // 图例设置（细字体）
     QFont legendFont;
     legendFont.setFamily("Arial");
     legendFont.setPointSize(8);
@@ -518,7 +627,6 @@ void DataProcessingDialog::openFile()
         return;
     }
 
-    // 清空缓存
     m_time.clear();
     m_rawA.clear(); m_filtA.clear();
     m_rawB.clear(); m_filtB.clear();
@@ -528,12 +636,19 @@ void DataProcessingDialog::openFile()
     bool firstLine = true;
     int validLines = 0;
 
+    auto parseValue = [](const QString &str, bool &ok) -> double {
+        if (str.compare("nan", Qt::CaseInsensitive) == 0) {
+            ok = true;
+            return qQNaN();
+        }
+        return str.toDouble(&ok);
+    };
+
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();
         if (line.isEmpty())
             continue;
 
-        // 跳过表头
         if (firstLine) {
             firstLine = false;
             if (line.contains("时间") || line.contains("Time"))
@@ -544,11 +659,9 @@ void DataProcessingDialog::openFile()
         if (parts.size() < 7)
             continue;
 
-        // 解析第一列：时间（可以是相对秒数或时分秒格式）
         bool okTime = false;
         double timeSec = parts[0].toDouble(&okTime);
         if (!okTime) {
-            // 尝试解析为 HH:mm:ss 或 HH:mm:ss.zzz
             QTime t = QTime::fromString(parts[0], "HH:mm:ss");
             if (!t.isValid()) {
                 t = QTime::fromString(parts[0], "HH:mm:ss.zzz");
@@ -558,14 +671,13 @@ void DataProcessingDialog::openFile()
             timeSec = t.hour() * 3600.0 + t.minute() * 60.0 + t.second() + t.msec() / 1000.0;
         }
 
-        // 解析其余6列浮点数
         bool ok = false;
-        double rawA = parts[1].toDouble(&ok); if (!ok) continue;
-        double filtA = parts[2].toDouble(&ok); if (!ok) continue;
-        double rawB = parts[3].toDouble(&ok); if (!ok) continue;
-        double filtB = parts[4].toDouble(&ok); if (!ok) continue;
-        double rawAB = parts[5].toDouble(&ok); if (!ok) continue;
-        double filtAB = parts[6].toDouble(&ok); if (!ok) continue;
+        double rawA = parseValue(parts[1], ok); if (!ok) continue;
+        double filtA = parseValue(parts[2], ok); if (!ok) continue;
+        double rawB = parseValue(parts[3], ok); if (!ok) continue;
+        double filtB = parseValue(parts[4], ok); if (!ok) continue;
+        double rawAB = parseValue(parts[5], ok); if (!ok) continue;
+        double filtAB = parseValue(parts[6], ok); if (!ok) continue;
 
         m_time.append(timeSec);
         m_rawA.append(rawA);
@@ -582,7 +694,6 @@ void DataProcessingDialog::openFile()
         return;
     }
 
-    // 更新曲线
     m_plot->graph(0)->setData(m_time, m_rawA);
     m_plot->graph(1)->setData(m_time, m_filtA);
     m_plot->graph(2)->setData(m_time, m_rawB);
@@ -623,29 +734,85 @@ void DataProcessingDialog::toggleManualIntegral(bool active)
     }
 }
 
+// ========== 手动积分面积计算（区分斜切/竖切，收集警告） ==========
 double DataProcessingDialog::calculateArea(const QVector<double> &x, const QVector<double> &y,
                                            int startIdx, int endIdx,
                                            const QString &type)
 {
+    // 边界保护
+    if (startIdx < 0 || endIdx < 0) return 0.0;
     if (startIdx >= endIdx || endIdx >= x.size()) return 0.0;
 
-    // 线性基线扣除（斜切和竖切都使用）
+    // NaN 检查
+    for (int i = startIdx; i <= endIdx; ++i) {
+        if (qIsNaN(y[i])) return 0.0;
+    }
+
     double x0 = x[startIdx];
     double y0 = y[startIdx];
     double x1 = x[endIdx];
     double y1 = y[endIdx];
-    double slope = (y1 - y0) / (x1 - x0);
 
-    double area = 0.0;
+    // 构建基线
+    double slope = 0.0;
+    double baselineY = 0.0;
+
+    if (type.contains("竖切")) {
+        slope = 0.0;
+        baselineY = qMin(y0, y1);
+    } else {
+        if (qAbs(x1 - x0) < 1e-9) {
+            slope = 0.0;
+        } else {
+            slope = (y1 - y0) / (x1 - x0);
+        }
+        baselineY = y0;
+    }
+
+    // 逐段积分
+    double areaRaw = 0.0;
+    double areaClipped = 0.0;
+
     for (int i = startIdx; i < endIdx; ++i) {
         double h = x[i+1] - x[i];
-        double baseline1 = y0 + slope * (x[i] - x0);
-        double baseline2 = y0 + slope * (x[i+1] - x0);
-        double val1 = y[i] - baseline1;
+
+        double baseline1, baseline2;
+        if (type.contains("竖切")) {
+            baseline1 = baselineY;
+            baseline2 = baselineY;
+        } else {
+            baseline1 = baselineY + slope * (x[i]   - x0);
+            baseline2 = baselineY + slope * (x[i+1] - x0);
+        }
+
+        double val1 = y[i]   - baseline1;
         double val2 = y[i+1] - baseline2;
-        area += h * (val1 + val2) / 2.0;
+
+        areaRaw += h * (val1 + val2) / 2.0;
+
+        double cval1 = (val1 < 0) ? 0.0 : val1;
+        double cval2 = (val2 < 0) ? 0.0 : val2;
+        areaClipped += h * (cval1 + cval2) / 2.0;
     }
-    return area;
+
+    // 收集警告（手动积分用）
+    if (areaClipped > 1e-9) {
+        double diffRatio = qAbs(areaRaw - areaClipped) / areaClipped;
+        if (diffRatio > 0.1) {
+            m_manualWarnings.append(QString("峰[%1, %2] 原始面积=%3 钳后面积=%4 差异过大，基线可能不准")
+                                        .arg(x0, 0, 'f', 3)
+                                        .arg(x1, 0, 'f', 3)
+                                        .arg(areaRaw, 0, 'f', 3)
+                                        .arg(areaClipped, 0, 'f', 3));
+        }
+    } else if (qAbs(areaRaw) > 1e-9) {
+        m_manualWarnings.append(QString("峰[%1, %2] 原始面积=%3 钳后面积=0，基线完全错误")
+                                    .arg(x0, 0, 'f', 3)
+                                    .arg(x1, 0, 'f', 3)
+                                    .arg(areaRaw, 0, 'f', 3));
+    }
+
+    return areaClipped;
 }
 
 void DataProcessingDialog::handleRightClick(const QPointF &scenePos)
@@ -670,7 +837,6 @@ void DataProcessingDialog::handleRightClick(const QPointF &scenePos)
         double start = qMin(m_startPoint, endPoint);
         double end = qMax(m_startPoint, endPoint);
 
-        // 查找起止索引（基于时间轴）
         int startIdx = -1, endIdx = -1;
         for (int i = 0; i < m_time.size(); ++i) {
             if (m_time[i] >= start && startIdx < 0) startIdx = i;
@@ -681,7 +847,6 @@ void DataProcessingDialog::handleRightClick(const QPointF &scenePos)
             return;
         }
 
-        // 遍历所有可见通道，分别积分
         QList<QPair<QString, QVector<double>>> channels;
         if (m_visibility.value("rawA", true)) channels.append({"A滤波前", m_rawA});
         if (m_visibility.value("filtA", true)) channels.append({"A滤波后", m_filtA});
@@ -690,13 +855,15 @@ void DataProcessingDialog::handleRightClick(const QPointF &scenePos)
         if (m_visibility.value("rawAB", true)) channels.append({"A-B滤波前", m_rawAB});
         if (m_visibility.value("filtAB", true)) channels.append({"A-B滤波后", m_filtAB});
 
-        int peakNum = 1; // 手动积分时，所有通道共用一组峰编号？可根据需要调整
+        // ★ 清空手动积分警告，开始收集
+        m_manualWarnings.clear();
+
+        int peakNum = 1;
         for (const auto &channel : channels) {
             const QString &name = channel.first;
             const QVector<double> &data = channel.second;
             if (data.size() <= endIdx) continue;
 
-            // 计算面积（带基线扣除）
             double area = calculateArea(m_time, data, startIdx, endIdx, m_integralType);
 
             addResultToTable("手动积分",
@@ -707,7 +874,20 @@ void DataProcessingDialog::handleRightClick(const QPointF &scenePos)
             peakNum++;
         }
 
-        // 重置状态，保留垂直线
+        // ★ 积分完成后，如果有警告，弹窗汇总
+        if (!m_manualWarnings.isEmpty()) {
+            QString text = QString("手动积分过程中发现 %1 处基线异常：\n\n").arg(m_manualWarnings.size());
+            int showCount = qMin(10, m_manualWarnings.size());
+            for (int i = 0; i < showCount; ++i) {
+                text += m_manualWarnings.at(i) + "\n";
+            }
+            if (m_manualWarnings.size() > showCount) {
+                text += QString("\n...（共 %1 条，仅显示前 %2 条）")
+                            .arg(m_manualWarnings.size()).arg(showCount);
+            }
+            QMessageBox::warning(this, "积分警告", text);
+        }
+
         m_selectingStart = true;
         m_statusLabel->setText("积分完成，可继续右键选择新峰起点，或再次点击手动积分退出");
     }
@@ -721,12 +901,10 @@ void DataProcessingDialog::autoIntegrate()
         return;
     }
 
-    // 准备数据并在线程中计算
     m_worker->setData(m_time, m_rawA, m_filtA, m_rawB, m_filtB, m_rawAB, m_filtAB);
     m_worker->setParameters(m_waveWidth, m_slopeThreshold, m_advance, m_delay,
                             m_integralType, m_visibility);
 
-    // 连接信号（如果尚未连接）
     connect(m_worker, &IntegrationWorker::integrationFinished,
             this, &DataProcessingDialog::onIntegrationFinished, Qt::UniqueConnection);
 
@@ -737,7 +915,7 @@ void DataProcessingDialog::autoIntegrate()
 
 void DataProcessingDialog::onIntegrationFinished(const QList<QStringList> &results)
 {
-    m_resultTable->setRowCount(0); // 清空旧结果
+    m_resultTable->setRowCount(0);
     for (const QStringList &row : results) {
         int r = m_resultTable->rowCount();
         m_resultTable->insertRow(r);

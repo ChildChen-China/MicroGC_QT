@@ -99,10 +99,16 @@ SignalPlotPanel::SignalPlotPanel(const QString &title, QWidget *parent)
         m_invertBtn->setChecked(false);
         m_invertBtn->setText("反转");
 
+        // 拉回最新数据：X 轴显示最后 20 秒，Y 轴自适应
         if (!m_x.isEmpty()) {
             double lastX = m_x.last();
-            double firstX = qMax(0.0, lastX - 20.0);
-            m_plot->xAxis->setRange(firstX, lastX);
+            const double rangeSpan = 20.0;
+            if (lastX <= rangeSpan) {
+                m_plot->xAxis->setRange(0, rangeSpan);
+            } else {
+                m_plot->xAxis->setRange(lastX - rangeSpan, lastX);
+            }
+            m_plot->yAxis->rescale(true);
         }
         m_plot->replot();
     });
@@ -128,13 +134,15 @@ void SignalPlotPanel::setData(const QVector<double> &x, const QVector<double> &y
     m_y = y;
     applyInversion();
 
+    // 仅在首次初始化 X 轴范围，避免数据刚开始时出现毫秒级刻度
+    // 之后用户可自由拖动、缩放，不会被打回
     if (!m_rangeInitialized) {
-        double lastX = x.last();
-        double firstX = qMax(0.0, lastX - 20.0);
-        m_plot->xAxis->setRange(firstX, lastX);
+        const double rangeSpan = 20.0;
+        m_plot->xAxis->setRange(0, rangeSpan);
         m_plot->yAxis->rescale(true);
         m_rangeInitialized = true;
     }
+
     m_plot->replot();
 }
 
@@ -257,7 +265,11 @@ void MonitorTab::onDataUpdated()
 {
     if (!m_comm) return;
 
-    double timeSec = (QDateTime::currentMSecsSinceEpoch() - m_startTime) / 1000.0;
+    // 只在 TCD 电源开启时记录数据
+    if (!m_tcdPowered) return;
+
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    double timeSec = (m_tcdActiveMs + (now - m_tcdLastTick)) / 1000.0;
 
     double rawA = m_comm->tcdVoltageA();
     double rawB = m_comm->tcdVoltageB();
@@ -278,16 +290,25 @@ void MonitorTab::onDataUpdated()
         if (!m_filtAB.isEmpty()) m_filtAB.removeFirst();
     }
 
-    // 因果滤波（仅使用过去和当前数据）
+    // 因果滤波（支持 NaN，断开处保持断开）
     int window = qMax(1, m_averagePoints);
     auto smooth = [window](const QVector<double> &input) -> QVector<double> {
         QVector<double> output(input.size());
         for (int i = 0; i < input.size(); ++i) {
+            if (qIsNaN(input[i])) {
+                output[i] = qQNaN();
+                continue;
+            }
             int start = qMax(0, i - window + 1);
             int end = i;
             double sum = 0.0;
-            for (int j = start; j <= end; ++j) sum += input[j];
-            output[i] = sum / (end - start + 1);
+            int count = 0;
+            for (int j = start; j <= end; ++j) {
+                if (qIsNaN(input[j])) continue;
+                sum += input[j];
+                count++;
+            }
+            output[i] = (count > 0) ? (sum / count) : qQNaN();
         }
         return output;
     };
@@ -297,16 +318,25 @@ void MonitorTab::onDataUpdated()
 
     updatePlots(false);
 
+    // 文件写入（若保存中）
     if (m_isSaving && m_saveFile.isOpen() && !m_time.isEmpty()) {
         int idx = m_time.size() - 1;
-        QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
-                               .arg(m_time.at(idx), 0, 'f', 3)
-                               .arg(m_rawA.at(idx), 0, 'f', 4)
-                               .arg(m_filtA.at(idx), 0, 'f', 4)
-                               .arg(m_rawB.at(idx), 0, 'f', 4)
-                               .arg(m_filtB.at(idx), 0, 'f', 4)
-                               .arg(m_rawAB.at(idx), 0, 'f', 4)
-                               .arg(m_filtAB.at(idx), 0, 'f', 4);
+
+        QString dataLine;
+        if (qIsNaN(m_rawA.at(idx))) {
+            // 断开点：写入 nan
+            dataLine = QString("%1 nan nan nan nan nan nan")
+                           .arg(m_time.at(idx), 0, 'f', 3);
+        } else {
+            dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
+            .arg(m_time.at(idx), 0, 'f', 3)
+                .arg(m_rawA.at(idx), 0, 'f', 4)
+                .arg(m_filtA.at(idx), 0, 'f', 4)
+                .arg(m_rawB.at(idx), 0, 'f', 4)
+                .arg(m_filtB.at(idx), 0, 'f', 4)
+                .arg(m_rawAB.at(idx), 0, 'f', 4)
+                .arg(m_filtAB.at(idx), 0, 'f', 4);
+        }
         m_saveStream << dataLine << "\n";
     }
 }
@@ -326,7 +356,7 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     connect(refreshBtn, &QPushButton::clicked, this, &MonitorTab::refreshParameters);
     basicLayout->addWidget(refreshBtn);
 
-    // TCD 温度设置
+    // TCD 温度
     auto *row1 = new QHBoxLayout;
     row1->addWidget(new QLabel("TCD温度:", basicGroup));
     m_tempEdit = new QSpinBox(basicGroup);
@@ -407,14 +437,17 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     connect(setPowerABtn, &QPushButton::clicked, this, &MonitorTab::setPowerA);
     connect(setPowerBBtn, &QPushButton::clicked, this, &MonitorTab::setPowerB);
 
-    // ---------- 电平设置 ----------
+    // ---------- 电平设置（QDoubleSpinBox，范围 -1.2~1.2）----------
     auto *levelGroup = new QGroupBox("电平设置", parent);
     auto *levelLayout = new QVBoxLayout(levelGroup);
 
     auto *levelRowA = new QHBoxLayout;
     levelRowA->addWidget(new QLabel("A电平:", levelGroup));
-    m_levelAEdit = new QSpinBox(levelGroup);
-    m_levelAEdit->setRange(-12, 12);
+    m_levelAEdit = new QDoubleSpinBox(levelGroup);
+    m_levelAEdit->setRange(-1.2, 1.2);
+    m_levelAEdit->setDecimals(1);
+    m_levelAEdit->setSingleStep(0.1);
+    m_levelAEdit->setSuffix(" V");
     QPushButton *setLevelABtn = new QPushButton("设置", levelGroup);
     setLevelABtn->setToolTip("ZA 0.1\r");
     levelRowA->addWidget(m_levelAEdit);
@@ -423,8 +456,11 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
 
     auto *levelRowB = new QHBoxLayout;
     levelRowB->addWidget(new QLabel("B电平:", levelGroup));
-    m_levelBEdit = new QSpinBox(levelGroup);
-    m_levelBEdit->setRange(-12, 12);
+    m_levelBEdit = new QDoubleSpinBox(levelGroup);
+    m_levelBEdit->setRange(-1.2, 1.2);
+    m_levelBEdit->setDecimals(1);
+    m_levelBEdit->setSingleStep(0.1);
+    m_levelBEdit->setSuffix(" V");
     QPushButton *setLevelBBtn = new QPushButton("设置", levelGroup);
     setLevelBBtn->setToolTip("ZB 0.1\r");
     levelRowB->addWidget(m_levelBEdit);
@@ -433,8 +469,11 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
 
     auto *levelRowAB = new QHBoxLayout;
     levelRowAB->addWidget(new QLabel("AB电平:", levelGroup));
-    m_levelABEdit = new QSpinBox(levelGroup);
-    m_levelABEdit->setRange(-12, 12);
+    m_levelABEdit = new QDoubleSpinBox(levelGroup);
+    m_levelABEdit->setRange(-1.2, 1.2);
+    m_levelABEdit->setDecimals(1);
+    m_levelABEdit->setSingleStep(0.1);
+    m_levelABEdit->setSuffix(" V");
     QPushButton *setLevelABBtn = new QPushButton("设置", levelGroup);
     setLevelABBtn->setToolTip("ZR 0.1\r");
     levelRowAB->addWidget(m_levelABEdit);
@@ -537,6 +576,48 @@ void MonitorTab::setupSignalPanel(QVBoxLayout *layout)
     layout->addWidget(m_panelAB, 1);
 }
 
+void MonitorTab::setTcdPowered(bool powered)
+{
+    if (m_tcdPowered == powered) return;
+
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    if (powered) {
+        // 电源开启，记录本次活动段起点
+        m_tcdLastTick = now;
+    } else {
+        // 电源关闭，累积活动时间
+        if (m_tcdLastTick > 0) {
+            m_tcdActiveMs += now - m_tcdLastTick;
+            m_tcdLastTick = 0;
+        }
+
+        // 插入 NaN 点，断开曲线
+        double lastTimeSec = m_tcdActiveMs / 1000.0;
+        m_time.append(lastTimeSec);
+        m_rawA.append(qQNaN());
+        m_rawB.append(qQNaN());
+        m_rawAB.append(qQNaN());
+        m_filtA.append(qQNaN());
+        m_filtB.append(qQNaN());
+        m_filtAB.append(qQNaN());
+
+        // 立即写入文件（不等下次 onDataUpdated）
+        if (m_isSaving && m_saveFile.isOpen()) {
+            QString dataLine = QString("%1 nan nan nan nan nan nan")
+            .arg(lastTimeSec, 0, 'f', 3);
+            m_saveStream << dataLine << "\n";
+            m_saveStream.flush();
+        }
+
+        // 立即刷新图像，显示断开
+        updatePlots(true);
+    }
+
+    m_tcdPowered = powered;
+}
+
+
 //==========================================================
 // 参数读写
 //==========================================================
@@ -545,9 +626,9 @@ int MonitorTab::getParameter(const QString &key) const
     if (key == "temperature")     return m_tempEdit->value();
     if (key == "powerA")          return m_powerAEdit->value();
     if (key == "powerB")          return m_powerBEdit->value();
-    if (key == "levelA")          return m_levelAEdit->value();
-    if (key == "levelB")          return m_levelBEdit->value();
-    if (key == "levelAB")         return m_levelABEdit->value();
+    if (key == "levelA")          return qRound(m_levelAEdit->value() * 10.0);
+    if (key == "levelB")          return qRound(m_levelBEdit->value() * 10.0);
+    if (key == "levelAB")         return qRound(m_levelABEdit->value() * 10.0);
     if (key == "zs")              return m_zsEdit->value();
     if (key == "precision")       return m_precisionEdit->currentData().toInt();
     if (key == "collectPoints")   return m_collectPoints;
@@ -564,11 +645,11 @@ void MonitorTab::setParameter(const QString &key, int value)
     } else if (key == "powerB") {
         m_powerBEdit->setValue(value);
     } else if (key == "levelA") {
-        m_levelAEdit->setValue(value);
+        m_levelAEdit->setValue(value / 10.0);
     } else if (key == "levelB") {
-        m_levelBEdit->setValue(value);
+        m_levelBEdit->setValue(value / 10.0);
     } else if (key == "levelAB") {
-        m_levelABEdit->setValue(value);
+        m_levelABEdit->setValue(value / 10.0);
     } else if (key == "zs") {
         m_zsEdit->setValue(value);
     } else if (key == "precision") {
@@ -612,31 +693,34 @@ void MonitorTab::setPowerB()
 void MonitorTab::setLevelA()
 {
     if (!m_comm) return;
-    int val = m_levelAEdit->value();
-    m_comm->setChannelAVoltage(static_cast<quint16>(val));
-    m_pendingLevelA = val;
+    double val = m_levelAEdit->value();                        // -1.2 ~ 1.2
+    qint16 raw = static_cast<qint16>(qRound(val * 10.0));      // -12 ~ 12
+    m_comm->setChannelAVoltage(static_cast<quint16>(raw));
+    m_pendingLevelA = static_cast<quint16>(raw);
     m_hasPendingLevelA = true;
-    emit logMessage("TCD", QString("A电平设置已发送: %1").arg(val));
+    emit logMessage("TCD", QString("A电平设置已发送: %1 V (raw=%2)").arg(val, 0, 'f', 1).arg(raw));
 }
 
 void MonitorTab::setLevelB()
 {
     if (!m_comm) return;
-    int val = m_levelBEdit->value();
-    m_comm->setChannelBVoltage(static_cast<quint16>(val));
-    m_pendingLevelB = val;
+    double val = m_levelBEdit->value();
+    qint16 raw = static_cast<qint16>(qRound(val * 10.0));
+    m_comm->setChannelBVoltage(static_cast<quint16>(raw));
+    m_pendingLevelB = static_cast<quint16>(raw);
     m_hasPendingLevelB = true;
-    emit logMessage("TCD", QString("B电平设置已发送: %1").arg(val));
+    emit logMessage("TCD", QString("B电平设置已发送: %1 V (raw=%2)").arg(val, 0, 'f', 1).arg(raw));
 }
 
 void MonitorTab::setLevelAB()
 {
     if (!m_comm) return;
-    int val = m_levelABEdit->value();
-    m_comm->setChannelABVoltage(static_cast<quint16>(val));
-    m_pendingLevelAB = val;
+    double val = m_levelABEdit->value();
+    qint16 raw = static_cast<qint16>(qRound(val * 10.0));
+    m_comm->setChannelABVoltage(static_cast<quint16>(raw));
+    m_pendingLevelAB = static_cast<quint16>(raw);
     m_hasPendingLevelAB = true;
-    emit logMessage("TCD", QString("AB电平设置已发送: %1").arg(val));
+    emit logMessage("TCD", QString("AB电平设置已发送: %1 V (raw=%2)").arg(val, 0, 'f', 1).arg(raw));
 }
 
 void MonitorTab::setZS()
@@ -644,19 +728,10 @@ void MonitorTab::setZS()
     if (!m_comm) return;
     int val = m_zsEdit->value();
     if (val < 0 || val > 4) return;
-
-    // 1. 发送调节命令
     m_comm->setZS(static_cast<quint16>(val));
-    emit logMessage("TCD", QString("启动调节流程: %1，暂停轮询30秒").arg(val));
-
-    // 2. 暂停轮询
-    m_comm->stopPolling();
-
-    // 3. 30秒后恢复轮询（不管调节成功与否，都恢复）
-    QTimer::singleShot(30000, this, [this]() {
-        m_comm->startPolling();
-        emit logMessage("TCD", "调节等待结束，恢复轮询");
-    });
+    m_pendingZS = val;
+    m_hasPendingZS = true;
+    emit logMessage("TCD", QString("启动调节流程已发送: %1").arg(val));
 }
 
 void MonitorTab::setPrecision()
@@ -707,7 +782,8 @@ void MonitorTab::checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value)
     m_powerCheckAttempts = 0;
     m_powerCheckReplyReceived = false;
 
-    m_comm->requestRegisterRead(0x0007, [this](quint16) {
+    // 改为读 0x0009（TCD 测量温度）
+    m_comm->requestRegisterRead(0x0009, [this](quint16) {
         m_powerCheckReplyReceived = true;
     });
 
@@ -728,7 +804,7 @@ void MonitorTab::onPowerCheckTimeout()
 
     if (m_powerCheckAttempts < 2) {
         m_powerCheckReplyReceived = false;
-        m_comm->requestRegisterRead(0x0007, [this](quint16) {
+        m_comm->requestRegisterRead(0x0009, [this](quint16) {   // 改为 0x0009
             m_powerCheckReplyReceived = true;
         });
         m_powerCheckTimer->start(300);
@@ -812,32 +888,35 @@ void MonitorTab::refreshParameters()
         if (m_tempEdit) m_tempEdit->setValue(v);
     });
 
-    // 0x03E9 A灯丝功率等级
+    // 0x03E9 A灯丝功率
     m_comm->requestRegisterRead(0x03E9, [this](quint16 v) {
         if (m_powerAEdit) m_powerAEdit->setValue(v);
     });
 
-    // 0x03EA B灯丝功率等级
+    // 0x03EA B灯丝功率
     m_comm->requestRegisterRead(0x03EA, [this](quint16 v) {
         if (m_powerBEdit) m_powerBEdit->setValue(v);
     });
 
-    // 0x03ED A通道电压设置
+    // 0x03ED A电平（s16，读回后除以 10 得到电压）
     m_comm->requestRegisterRead(0x03ED, [this](quint16 v) {
-        if (m_levelAEdit) m_levelAEdit->setValue(static_cast<qint16>(v));
+        qint16 raw = static_cast<qint16>(v);
+        if (m_levelAEdit) m_levelAEdit->setValue(raw / 10.0);
     });
 
-    // 0x03EE B通道电压设置
+    // 0x03EE B电平
     m_comm->requestRegisterRead(0x03EE, [this](quint16 v) {
-        if (m_levelBEdit) m_levelBEdit->setValue(static_cast<qint16>(v));
+        qint16 raw = static_cast<qint16>(v);
+        if (m_levelBEdit) m_levelBEdit->setValue(raw / 10.0);
     });
 
-    // 0x03EF AB通道电压设置
+    // 0x03EF AB电平
     m_comm->requestRegisterRead(0x03EF, [this](quint16 v) {
-        if (m_levelABEdit) m_levelABEdit->setValue(static_cast<qint16>(v));
+        qint16 raw = static_cast<qint16>(v);
+        if (m_levelABEdit) m_levelABEdit->setValue(raw / 10.0);
     });
 
-    // 0x03F0 ZS 启动调节流程（0~4）
+    // 0x03F0 ZS 启动调节流程
     m_comm->requestRegisterRead(0x03F0, [this](quint16 v) {
         if (m_zsEdit) m_zsEdit->setValue(v);
     });
@@ -850,7 +929,7 @@ void MonitorTab::refreshParameters()
         }
     });
 
-    // 0x03F2 RF 复位标志（只读，无 UI 显示，记录到日志即可）
+    // 0x03F2 RF 复位标志（命令型，仅日志记录）
     m_comm->requestRegisterRead(0x03F2, [this](quint16 v) {
         emit logMessage("TCD", QString("RF 复位标志当前值: %1").arg(v));
     });
@@ -895,15 +974,22 @@ void MonitorTab::startDataSave(const QString &fileName, int durationMinutes)
     m_saveStream.setDevice(&m_saveFile);
     m_saveStream << "时间 滤波前A 滤波后A 滤波前B 滤波后B 滤波前A-B 滤波后A-B\n";
 
+    // 写入已缓冲的数据（含 NaN 断开点）
     for (int i = 0; i < m_time.size(); ++i) {
-        QString dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
-        .arg(m_time.at(i), 0, 'f', 3)
-            .arg(m_rawA.at(i), 0, 'f', 4)
-            .arg(m_filtA.at(i), 0, 'f', 4)
-            .arg(m_rawB.at(i), 0, 'f', 4)
-            .arg(m_filtB.at(i), 0, 'f', 4)
-            .arg(m_rawAB.at(i), 0, 'f', 4)
-            .arg(m_filtAB.at(i), 0, 'f', 4);
+        QString dataLine;
+        if (qIsNaN(m_rawA.at(i))) {
+            dataLine = QString("%1 nan nan nan nan nan nan")
+            .arg(m_time.at(i), 0, 'f', 3);
+        } else {
+            dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
+            .arg(m_time.at(i), 0, 'f', 3)
+                .arg(m_rawA.at(i), 0, 'f', 4)
+                .arg(m_filtA.at(i), 0, 'f', 4)
+                .arg(m_rawB.at(i), 0, 'f', 4)
+                .arg(m_filtB.at(i), 0, 'f', 4)
+                .arg(m_rawAB.at(i), 0, 'f', 4)
+                .arg(m_filtAB.at(i), 0, 'f', 4);
+        }
         m_saveStream << dataLine << "\n";
     }
 

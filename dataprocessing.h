@@ -4,6 +4,8 @@
 #include <QDialog>
 #include <QVector>
 #include <QMap>
+#include <QList>
+#include <QString>
 
 class InteractivePlot;
 class QButtonGroup;
@@ -17,7 +19,9 @@ class QSpinBox;
 class QCPItemStraightLine;
 class QThread;
 
+//==========================================================
 // 积分设置对话框（非模态）
+//==========================================================
 class IntegralSettingsDialog : public QDialog
 {
     Q_OBJECT
@@ -49,7 +53,9 @@ private:
     QDoubleSpinBox *m_delay;
 };
 
+//==========================================================
 // 积分工作线程类
+//==========================================================
 class IntegrationWorker : public QObject
 {
     Q_OBJECT
@@ -72,6 +78,7 @@ public slots:
 
 signals:
     void integrationFinished(const QList<QStringList> &results);
+    void warningsGenerated(const QList<QString> &warnings);
 
 private:
     void integrateChannel(const QVector<double> &x, const QVector<double> &y,
@@ -89,8 +96,12 @@ private:
     double m_delay;
     QString m_integralType;
     QMap<QString, bool> m_visibility;
+    QList<QString> m_warnings;
 };
 
+//==========================================================
+// 数据处理对话框
+//==========================================================
 class DataProcessingDialog : public QDialog
 {
     Q_OBJECT
@@ -124,6 +135,7 @@ private:
                           double retention, double area);
     double calculateArea(const QVector<double> &x, const QVector<double> &y,
                          int startIdx, int endIdx, const QString &type);
+
     InteractivePlot *m_plot;
     QButtonGroup *m_zoomGroup;
     QTableWidget *m_resultTable;
@@ -150,6 +162,9 @@ private:
 
     QThread *m_thread;
     IntegrationWorker *m_worker;
+
+    // 手动积分的警告收集
+    QList<QString> m_manualWarnings;
 };
 
 #endif // DATAPROCESSING_H

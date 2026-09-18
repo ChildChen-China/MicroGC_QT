@@ -56,7 +56,7 @@ ValveItem::ValveItem(const QString &name, const QPointF &pos, qreal rotation, QG
 
     m_label = new QGraphicsTextItem(m_name, this);
     m_label->setDefaultTextColor(QColor("#0055aa"));
-    m_label->setFont(QFont("Arial", 12, QFont::Bold));
+    m_label->setFont(QFont("Arial", 20, QFont::Bold));
     m_label->setPos(0, 20);
 }
 
@@ -146,9 +146,9 @@ SixWayValveItem::SixWayValveItem(const QString &name, const QPointF &center, QGr
     updateInternalConnections();
 
     m_label = new QGraphicsTextItem(m_name, this);
-    m_label->setDefaultTextColor(Qt::black);
-    m_label->setFont(QFont("Arial", 16, QFont::Bold));
-    m_label->setPos(-25, 85);
+    m_label->setDefaultTextColor(Qt::blue);
+    m_label->setFont(QFont("Arial", 20, QFont::Bold));
+    m_label->setPos(-165, -25);
 }
 
 QRectF SixWayValveItem::boundingRect() const
