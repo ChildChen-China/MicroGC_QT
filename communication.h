@@ -55,6 +55,9 @@ public:
     void setFlow1Voltage(quint16 value);
     void setFlow2Voltage(quint16 value);
 
+    quint16 diagRegister() const;
+    quint16 m_diagRegister = 0;
+
     // 批量写
     void writeMultipleRegisters(quint16 startAddr, const QVector<quint16> &values, const QString &description);
 
@@ -71,12 +74,14 @@ signals:
     void slowDataUpdated();
     void statusMessage(const QString &message);
     void logPacket(const QString &direction, const QString &dataHex);
+    void faultBitsChanged(quint16 diag);
 
 private slots:
     void onStateChanged(QModbusDevice::State state);
     void onErrorOccurred(QModbusDevice::Error error);
     void onFastTimer();
     void onSlowTimer();
+
 
 private:
     struct Request {

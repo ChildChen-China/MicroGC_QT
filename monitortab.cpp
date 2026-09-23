@@ -779,16 +779,34 @@ void MonitorTab::checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value)
 
     m_powerCheckInProgress = true;
     m_powerCheckIsA = isPowerA;
-    m_powerCheckAttempts = 0;
-    m_powerCheckReplyReceived = false;
 
-    // 改为读 0x0009（TCD 测量温度）
-    m_comm->requestRegisterRead(0x0009, [this](quint16) {
-        m_powerCheckReplyReceived = true;
+    // 直接读 0x000A（最新一次慢速轮询缓存，或主动发起一次）
+    // 为保证实时性，这里主动发一次读取请求
+    m_comm->requestRegisterRead(0x000A, [this, isPowerA, value](quint16 diag) {
+        m_powerCheckInProgress = false;
+
+        bool tc4Fail = (diag & (1 << 0)) != 0;
+        bool tcdFail = (diag & (1 << 1)) != 0;
+        bool powered = !(tc4Fail || tcdFail);
+
+        if (powered) {
+            emit logMessage("TCD", "TCD已通电，禁止设置灯丝功率！");
+            return;
+        }
+
+        // 未通电，允许设置灯丝
+        if (isPowerA) {
+            m_comm->setLampPowerA(value);
+            m_pendingPowerA = value;
+            m_hasPendingPowerA = true;
+            emit logMessage("TCD", QString("灯丝功率A设置已发送: %1 %").arg(value));
+        } else {
+            m_comm->setLampPowerB(value);
+            m_pendingPowerB = value;
+            m_hasPendingPowerB = true;
+            emit logMessage("TCD", QString("灯丝功率B设置已发送: %1 %").arg(value));
+        }
     });
-
-    m_powerCheckTimer->start(300);
-    Q_UNUSED(value);
 }
 
 void MonitorTab::onPowerCheckTimeout()

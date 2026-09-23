@@ -31,6 +31,7 @@ private slots:
     void onCommunicationDisconnected();
     void checkTcdPowerStatus();
     void updateTcdPowerIcon();
+    void onFaultBitsChanged(quint16 diag);
 
 private:
     void createActions();

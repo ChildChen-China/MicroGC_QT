@@ -36,15 +36,12 @@ LogWidget::LogWidget(QWidget *parent)
     }
 
     // 打开今天的日志文件
-    openLogFile(QDate::currentDate(), 0);
+    openLogFile(QDate::currentDate());
 
-    // ========== 写入本次启动的分隔标识 ==========
+    // 写入本次启动的分隔标识到文件
     if (m_logFile.isOpen()) {
         QString startTime = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
-        m_logStream << "========================================\n";
-        m_logStream << QString("程序启动时间: %1\n").arg(startTime);
-        m_logStream << "========================================\n";
-        m_logStream.flush();
+        appendFileOnly("系统", QString("========== 程序启动 %1 ==========").arg(startTime));
     }
 }
 
@@ -56,11 +53,13 @@ LogWidget::~LogWidget()
     }
 }
 
+// ============================================================
+// appendLog：只上界面，不写文件
+// ============================================================
 void LogWidget::appendLog(const QString &type, const QString &event)
 {
     QString time = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
 
-    // ========== 更新界面表格 ==========
     int row = 0;
     m_table->insertRow(row);
     m_table->setItem(row, 0, new QTableWidgetItem(time));
@@ -71,21 +70,32 @@ void LogWidget::appendLog(const QString &type, const QString &event)
     while (m_table->rowCount() > MAX_DISPLAY_ROWS) {
         m_table->removeRow(m_table->rowCount() - 1);
     }
-
-    // ========== 写入文件（保留所有日志） ==========
-    if (m_logFile.isOpen()) {
-        m_logStream << QString("[%1] [%2] %3\n").arg(time, type, event);
-        m_logStream.flush();
-        m_currentFileLines++;
-
-        // 检查是否需要切换文件（跨天或行数超限）
-        checkAndRotateFile();
-    } else {
-        qWarning() << "日志文件未打开，无法写入";
-    }
 }
 
-void LogWidget::openLogFile(const QDate &date, int suffix)
+// ============================================================
+// appendFileOnly：只写文件，不上界面
+// ============================================================
+void LogWidget::appendFileOnly(const QString &type, const QString &event)
+{
+    if (!m_logFile.isOpen()) {
+        qWarning() << "日志文件未打开，无法写入";
+        return;
+    }
+
+    QString time = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
+    m_logStream << QString("[%1] [%2] %3\n").arg(time, type, event);
+    m_logStream.flush();
+    m_currentFileLines++;
+
+    // 检查是否需要切换文件（跨天或行数超限）
+    checkAndRotateFile();
+}
+
+// ============================================================
+// 打开日志文件：命名规则 yyyyMMdd_N.txt，N 从 1 开始
+// 优先续写当天最大编号且未满的文件；已满则新建下一个编号
+// ============================================================
+void LogWidget::openLogFile(const QDate &date)
 {
     // 关闭旧文件
     if (m_logFile.isOpen()) {
@@ -94,41 +104,75 @@ void LogWidget::openLogFile(const QDate &date, int suffix)
     }
 
     QString dateStr = date.toString("yyyyMMdd");
-    QString fileName;
-    if (suffix == 0) {
-        fileName = QString("log/%1.txt").arg(dateStr);
+
+    // 找到当天最大编号
+    int suffix = 1;
+    while (QFile::exists(QString("log/%1_%2.txt").arg(dateStr).arg(suffix + 1))) {
+        suffix++;
+    }
+
+    // 检查最大编号文件是否已满
+    QString fileName = QString("log/%1_%2.txt").arg(dateStr).arg(suffix);
+    if (QFile::exists(fileName)) {
+        int lines = countLinesInFile(fileName);
+        if (lines >= MAX_FILE_LINES) {
+            // 已满，新建下一个编号
+            suffix++;
+            fileName = QString("log/%1_%2.txt").arg(dateStr).arg(suffix);
+            m_currentFileLines = 0;
+        } else {
+            // 未满，续写
+            m_currentFileLines = lines;
+        }
     } else {
-        fileName = QString("log/%1_%2.txt").arg(dateStr).arg(suffix);
+        // 当天还没有任何文件，从 _1 开始
+        m_currentFileLines = 0;
     }
 
     m_logFile.setFileName(fileName);
     if (m_logFile.open(QIODevice::Append | QIODevice::Text)) {
         m_logStream.setDevice(&m_logFile);
         m_currentDate = dateStr;
-        m_currentFileLines = 0;
+        m_currentFileSuffix = suffix;
     } else {
         qWarning() << "无法打开日志文件:" << fileName;
         m_logStream.setDevice(nullptr);
     }
 }
 
+// ============================================================
+// 检查跨天或行数超限
+// ============================================================
 void LogWidget::checkAndRotateFile()
 {
-    // 检查是否跨天
+    // 跨天：切到新的一天
     QString today = QDate::currentDate().toString("yyyyMMdd");
     if (today != m_currentDate) {
-        openLogFile(QDate::currentDate(), 0);
+        openLogFile(QDate::currentDate());
         return;
     }
 
-    // 检查行数是否超过10万
-    const int maxLines = 100000;
-    if (m_currentFileLines >= maxLines) {
-        QString dateStr = QDate::currentDate().toString("yyyyMMdd");
-        int suffix = 1;
-        while (QFile::exists(QString("log/%1_%2.txt").arg(dateStr).arg(suffix))) {
-            suffix++;
-        }
-        openLogFile(QDate::currentDate(), suffix);
+    // 行数超限：新建下一个编号
+    if (m_currentFileLines >= MAX_FILE_LINES) {
+        openLogFile(QDate::currentDate());
     }
+}
+
+// ============================================================
+// 统计文件行数
+// ============================================================
+int LogWidget::countLinesInFile(const QString &fileName)
+{
+    QFile f(fileName);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return 0;
+
+    int count = 0;
+    QTextStream in(&f);
+    while (!in.atEnd()) {
+        in.readLine();
+        count++;
+    }
+    f.close();
+    return count;
 }

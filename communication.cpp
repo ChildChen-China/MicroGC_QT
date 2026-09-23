@@ -7,7 +7,7 @@ Communication::Communication(QObject *parent)
     : QObject(parent)
 {
     m_fastTimer = new QTimer(this);
-    m_fastTimer->setInterval(20);
+    m_fastTimer->setInterval(30);
     m_fastTimer->setTimerType(Qt::PreciseTimer);
 
     m_slowTimer = new QTimer(this);
@@ -122,20 +122,28 @@ void Communication::onSlowTimer()
     }
 
     if (m_tcdPowered) {
-        // TCD 开启：读 0x0000~0x0003 和 0x0007~0x0009
+        // 上电：0x0000~0x0003
         Request r1;
         r1.type = Request::SlowPoll;
         r1.address = 0x0000;
         r1.count = 4;
         enqueue(r1);
 
+        // 上电：0x0007~0x0009
         Request r2;
         r2.type = Request::SlowPoll;
         r2.address = 0x0007;
         r2.count = 3;
         enqueue(r2);
+
+        // 无论上电与否都读 0x000A
+        Request r3;
+        r3.type = Request::SlowPoll;
+        r3.address = 0x000A;
+        r3.count = 1;
+        enqueue(r3);
     } else {
-        // TCD 关闭：只读 0x0000（柱温箱）和 0x0003（压力）
+        // 断电：只读柱温箱和压力
         Request r1;
         r1.type = Request::SlowPoll;
         r1.address = 0x0000;
@@ -147,9 +155,15 @@ void Communication::onSlowTimer()
         r2.address = 0x0003;
         r2.count = 1;
         enqueue(r2);
+
+        // 断电时也读 0x000A，用于判断是否恢复上电
+        Request r3;
+        r3.type = Request::SlowPoll;
+        r3.address = 0x000A;
+        r3.count = 1;
+        enqueue(r3);
     }
 }
-
 //-------------------------------------------------------------
 // 队列管理
 //-------------------------------------------------------------
@@ -208,23 +222,58 @@ void Communication::processQueue()
     sendRequest(m_current);
 }
 
+quint16 Communication::diagRegister() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_diagRegister;
+}
+
 void Communication::sendRequest(const Request &req)
 {
+    // ========== 构造报文的十六进制表示 ==========
+    auto buildHexFrame = [](quint8 funcCode, quint16 startAddr, quint16 countOrValue,
+                            const QVector<quint16> &values) -> QString {
+        QString hex;
+        hex += QString("%1").arg(funcCode, 2, 16, QChar('0')).toUpper();
+        hex += " ";
+        hex += QString("%1").arg(startAddr, 4, 16, QChar('0')).toUpper();
+        hex += " ";
+        hex += QString("%1").arg(countOrValue, 4, 16, QChar('0')).toUpper();
+        if (funcCode == 0x10 && !values.isEmpty()) {
+            quint8 byteCount = static_cast<quint8>(values.size() * 2);
+            hex += " ";
+            hex += QString("%1").arg(byteCount, 2, 16, QChar('0')).toUpper();
+            for (quint16 v : values) {
+                hex += " ";
+                hex += QString("%1").arg(v, 4, 16, QChar('0')).toUpper();
+            }
+        }
+        return hex;
+    };
+
+    // ========== 写请求 ==========
     if (req.type == Request::Write || req.type == Request::WriteMultiple) {
         QModbusDataUnit unit;
+        QString frameHex;
+
         if (req.type == Request::Write) {
             unit = QModbusDataUnit(QModbusDataUnit::HoldingRegisters, req.address, 1);
             unit.setValue(0, req.value);
+            frameHex = buildHexFrame(0x06, req.address, req.value, {});
         } else {
             unit = QModbusDataUnit(QModbusDataUnit::HoldingRegisters, req.address, req.values.size());
             for (int i = 0; i < req.values.size(); ++i)
                 unit.setValue(i, req.values[i]);
+            frameHex = buildHexFrame(0x10, req.address,
+                                     static_cast<quint16>(req.values.size()),
+                                     req.values);
         }
 
-        emit logPacket("发送", QString("%1 [寄存器 0x%2 数量 %3]")
+        emit logPacket("发送", QString("%1 [寄存器 0x%2 数量 %3]     报文：%4")
                                    .arg(req.description)
                                    .arg(req.address, 4, 16, QChar('0'))
-                                   .arg(unit.valueCount()));
+                                   .arg(unit.valueCount())
+                                   .arg(frameHex));
 
         QModbusReply *reply = m_client->sendWriteRequest(unit, 1);
         if (!reply) {
@@ -244,8 +293,21 @@ void Communication::sendRequest(const Request &req)
             m_busy = false;
             processQueue();
         });
-    } else {
+    }
+    // ========== 读请求 ==========
+    else {
         QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, req.address, req.count);
+
+        // 只有 Read / ReadRange 才输出日志，FastPoll / SlowPoll 静默
+        bool logThisRead = (req.type == Request::Read || req.type == Request::ReadRange);
+        if (logThisRead) {
+            QString frameHex = buildHexFrame(0x03, req.address, req.count, {});
+            emit logPacket("发送", QString("读取 [寄存器 0x%1 数量 %2]     报文：%3")
+                                       .arg(req.address, 4, 16, QChar('0'))
+                                       .arg(req.count)
+                                       .arg(frameHex));
+        }
+
         QModbusReply *reply = m_client->sendReadRequest(unit, 1);
         if (!reply) {
             if (req.type == Request::Read && req.readCallback)
@@ -280,14 +342,21 @@ void Communication::sendRequest(const Request &req)
                     if (req.readRangeCallback) req.readRangeCallback(values);
                 }
             } else {
-                if (req.type == Request::Read && req.readCallback)
-                    req.readCallback(0);
-                if (req.type == Request::ReadRange && req.readRangeCallback)
+                if (req.type == Request::Read) {
+                    if (req.readCallback) req.readCallback(0);
+                    // 手动读取失败：输出日志
+                    emit logPacket("接收", QString("读取失败 [寄存器 0x%1]: %2")
+                                               .arg(req.address, 4, 16, QChar('0'))
+                                               .arg(reply->errorString()));
+                }
+                if (req.type == Request::ReadRange && req.readRangeCallback) {
                     req.readRangeCallback(QVector<quint16>());
-                if (req.type == Request::FastPoll)
-                    emit statusMessage(QString("快速读取错误: %1").arg(reply->errorString()));
-                if (req.type == Request::SlowPoll)
-                    emit statusMessage(QString("慢速读取错误: %1").arg(reply->errorString()));
+                    emit logPacket("接收", QString("范围读取失败 [寄存器 0x%1 数量 %2]: %3")
+                                               .arg(req.address, 4, 16, QChar('0'))
+                                               .arg(req.count)
+                                               .arg(reply->errorString()));
+                }
+                // FastPoll / SlowPoll 静默（避免刷屏）
             }
             m_busy = false;
             processQueue();
@@ -325,6 +394,19 @@ void Communication::processSlowResponse(const QModbusDataUnit &unit, quint16 sta
         if (unit.valueCount() >= 2) m_tcdPowerFB = unit.value(1);
         if (unit.valueCount() >= 3) m_tcdMeasureTemp = unit.value(2);
     }
+    else if (startAddr == 0x000A) {
+      if (unit.valueCount() >= 1) {
+        quint16 newDiag = unit.value(0);
+        bool changed = (newDiag != m_diagRegister);
+        m_diagRegister = newDiag;
+
+        // 如果故障位变化，发信号通知界面
+        if (changed) {
+            emit faultBitsChanged(newDiag);
+        }
+      }
+    }
+
 }
 
 //-------------------------------------------------------------
@@ -456,4 +538,4 @@ double Communication::tcdVoltageB() const { QMutexLocker locker(&m_mutex); retur
 double Communication::tcdVoltageAB() const { QMutexLocker locker(&m_mutex); return m_tcdVoltageAB; }
 double Communication::tcdPowerFA() const { QMutexLocker locker(&m_mutex); return m_tcdPowerFA; }
 double Communication::tcdPowerFB() const { QMutexLocker locker(&m_mutex); return m_tcdPowerFB; }
-double Communication::tcdMeasureTemp() const { QMutexLocker locker(&m_mutex); return m_tcdMeasureTemp; }
+double Communication::tcdMeasureTemp() const{QMutexLocker locker(&m_mutex);return static_cast<int>(m_tcdMeasureTemp / 100.0);}

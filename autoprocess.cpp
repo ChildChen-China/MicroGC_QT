@@ -295,6 +295,12 @@ void AutoProcessManager::processVerifyQueue()
     quint16 startAddr = cmd.startAddr;
     quint16 count = static_cast<quint16>(cmd.expectedValues.size());
 
+    // 打印验证读取请求（用户可见）
+    emit logMessage("自动流程", QString("验证读取: %1 [寄存器 0x%2 数量 %3]")
+                                    .arg(name)
+                                    .arg(startAddr, 4, 16, QChar('0'))
+                                    .arg(count));
+
     m_comm->requestRegisterReadRange(startAddr, count, [this, name](const QVector<quint16> &actual) {
         m_verifyReadPending = false;
 

@@ -372,8 +372,37 @@ void ControlTab::handleValveClicked(ValveItem *valve)
     }
 
     if (m_comm) {
+        // 写命令
         m_comm->setValveBit(0, newState);
         m_comm->setSixWayValve1(newState);
+
+        // 稍等片刻后读取验证（避免与写命令抢队列）
+        quint16 expectedValve = newState ? 1 : 0;
+        quint16 expectedSixWay = newState ? 1 : 0;
+
+        QTimer::singleShot(500, this, [this, expectedValve, expectedSixWay]() {
+            if (!m_comm) return;
+
+            // 验证 0x0401 电磁阀
+            m_comm->requestRegisterRead(0x0401, [this, expectedValve](quint16 v) {
+                if (v == expectedValve) {
+                    emit logMessage("控制", QString("电磁阀验证成功: 0x0401 = %1").arg(v));
+                } else {
+                    emit logMessage("控制", QString("电磁阀验证失败: 期望 %1，实际 %2")
+                                                .arg(expectedValve).arg(v));
+                }
+            });
+
+            // 验证 0x0404 六通阀
+            m_comm->requestRegisterRead(0x0404, [this, expectedSixWay](quint16 v) {
+                if (v == expectedSixWay) {
+                    emit logMessage("控制", QString("六通阀验证成功: 0x0404 = %1").arg(v));
+                } else {
+                    emit logMessage("控制", QString("六通阀验证失败: 期望 %1，实际 %2")
+                                                .arg(expectedSixWay).arg(v));
+                }
+            });
+        });
     }
 
     emit commandRequested("电磁阀", newState);

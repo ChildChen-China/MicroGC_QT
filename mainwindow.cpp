@@ -78,34 +78,54 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ========== TCD 电源状态定时器（每 20 秒） ==========
     m_tcdCheckTimer = new QTimer(this);
-    m_tcdCheckTimer->setInterval(20000);
+    m_tcdCheckTimer->setInterval(2000);
     m_tcdCheckTimer->setTimerType(Qt::PreciseTimer);
     connect(m_tcdCheckTimer, &QTimer::timeout, this, &MainWindow::checkTcdPowerStatus);
 
     // ========== 自动流程管理器 ==========
+    // ========== 自动流程日志：界面 + 文件 ==========
     m_autoProcess = new AutoProcessManager(m_comm, this);
-    connect(m_autoProcess, &AutoProcessManager::logMessage, this, [this](const QString &type, const QString &event) {
-        m_log->appendLog(type, event);
-    });
-    connect(m_autoProcess, &AutoProcessManager::stateChanged, this, [this](const QString &state) {
-        m_log->appendLog("自动流程", "状态: " + state);
-        if (m_startStopAction) {
-            if (state == "空闲") {
-                m_startStopAction->setText("开始自动流程");
-                m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-            } else {
-                m_startStopAction->setText("停止");
-                m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
-            }
-        }
+    connect(m_autoProcess, &AutoProcessManager::logMessage, this,
+            [this](const QString &type, const QString &event) {
+                m_log->appendLog(type, event);        // 上界面
+                m_log->appendFileOnly(type, event);   // 写文件
+            });
+
+    // 自动流程状态变化：界面 + 文件
+    connect(m_autoProcess, &AutoProcessManager::stateChanged, this,
+            [this](const QString &state) {
+                QString msg = "状态: " + state;
+                m_log->appendLog("自动流程", msg);
+                m_log->appendFileOnly("自动流程", msg);
+
+                if (m_startStopAction) {
+                    if (state == "空闲") {
+                        m_startStopAction->setText("开始自动流程");
+                        m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+                    } else {
+                        m_startStopAction->setText("停止");
+                        m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+                    }
+                }
+            });
+
+    // ========== 报文日志：界面 + 文件 ==========
+    // FastPoll/SlowPoll 已在 sendRequest 中静默，不会 emit logPacket，
+    // 所以这里只会收到：写命令、按需读取（Read/ReadRange）的报文，
+    // 全部上界面 + 写文件，不会刷屏。
+    connect(m_comm, &Communication::logPacket, this,
+            [this](const QString &direction, const QString &dataHex) {
+                QString msg = QString("[%1] %2").arg(direction, dataHex);
+                m_log->appendLog("通信", msg);        // 上界面
+                m_log->appendFileOnly("通信", msg);   // 写文件
+            });
+
+    // ========== 通信状态消息：界面 + 文件 ==========
+    connect(m_comm, &Communication::statusMessage, this, [this](const QString &msg) {
+        m_log->appendLog("通信", msg);        // 上界面
+        m_log->appendFileOnly("通信", msg);   // 写文件
     });
 
-    connect(m_comm, &Communication::logPacket, this, [this](const QString &direction, const QString &dataHex) {
-        m_log->appendLog("通信", QString("[%1] %2").arg(direction, dataHex));
-    });
-    connect(m_comm, &Communication::statusMessage, this, [this](const QString &msg) {
-        m_log->appendLog("通信", msg);
-    });
     connect(m_comm, &Communication::connected, this, &MainWindow::onCommunicationConnected);
     connect(m_comm, &Communication::disconnected, this, &MainWindow::onCommunicationDisconnected);
 
@@ -134,6 +154,8 @@ MainWindow::MainWindow(QWidget *parent)
             m_monitorTab, &MonitorTab::startAutoSave);
     connect(m_autoProcess, &AutoProcessManager::stopDataSaveTriggered,
             m_monitorTab, &MonitorTab::stopDataSave);
+    connect(m_comm, &Communication::faultBitsChanged,
+            this, &MainWindow::onFaultBitsChanged);
 
     QWidget *central = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(central);
@@ -272,6 +294,7 @@ void MainWindow::createTabs()
     });
     connect(m_controlTab, &ControlTab::logMessage, this, [this](const QString &type, const QString &event) {
         m_log->appendLog(type, event);
+        m_log->appendFileOnly(type, event);
     });
     connect(m_controlTab, &ControlTab::sixWayValveToggled, this, [this]() {
         if (m_monitorTab) m_monitorTab->startAutoSave();
@@ -279,9 +302,11 @@ void MainWindow::createTabs()
 
     connect(m_monitorTab, &MonitorTab::logMessage, this, [this](const QString &type, const QString &event) {
         m_log->appendLog(type, event);
+        m_log->appendFileOnly(type, event);
     });
     connect(m_otherTab, &OtherTab::logMessage, this, [this](const QString &type, const QString &event) {
         m_log->appendLog(type, event);
+        m_log->appendFileOnly(type, event);
     });
 }
 
@@ -289,6 +314,7 @@ void MainWindow::onCommunicationConnected()
 {
     m_comm->startPolling();
     m_log->appendLog("通信", "已连接并开始轮询");
+    m_log->appendFileOnly("通信", "已连接并开始轮询");
 
     if (m_connectAction) {
         m_connectAction->setIcon(m_iconConnectDefault);
@@ -301,6 +327,7 @@ void MainWindow::onCommunicationDisconnected()
 {
     m_comm->stopPolling();
     m_log->appendLog("通信", "连接断开");
+    m_log->appendFileOnly("通信", "连接断开");
 
     // 连接断开时，将连接按钮图标设为黑色
     if (m_connectAction) {
@@ -358,8 +385,53 @@ void MainWindow::openConnectionDialog()
         settings.sync();
 
         m_comm->connectToDevice(ipEdit->text(), portSpin->value());
-        m_log->appendLog("连接", QString("尝试连接 %1:%2").arg(ipEdit->text()).arg(portSpin->value()));
+        QString msg = QString("尝试连接 %1:%2").arg(ipEdit->text()).arg(portSpin->value());
+        m_log->appendLog("连接", msg);
+        m_log->appendFileOnly("连接", msg);
     }
+}
+
+void MainWindow::onFaultBitsChanged(quint16 diag)
+{
+    struct BitInfo {
+        int bit;
+        const char *name;
+    };
+    static const BitInfo bits[] = {
+                                    {0,  "TC4通信故障"},
+                                    {1,  "TCD通信故障"},
+                                    {2,  "TCD命令FIFO满"},
+                                    {3,  "TC4命令FIFO满"},
+                                    {4,  "TCD A超量程"},
+                                    {5,  "TCD B超量程"},
+                                    {6,  "TCD A-B超量程"},
+                                    {7,  "流量输入过量程"},
+                                    {8,  "压力输入过量程"},
+                                    {9,  "上位机通信超时"},
+                                    {10, "TPC6200采集故障"},
+                                    {11, "网络参数无有效记录"},
+                                    {12, "网络参数保存失败"},
+                                    };
+
+    // 收集当前置位的故障
+    QStringList faultList;
+    for (const BitInfo &b : bits) {
+        if (diag & (1 << b.bit)) {
+            faultList.append(b.name);
+        }
+    }
+
+    QString msg;
+    if (faultList.isEmpty()) {
+        msg = QString("故障状态清除: 0x%1").arg(diag, 4, 16, QChar('0'));
+    } else {
+        msg = QString("故障状态: 0x%1 → %2")
+                  .arg(diag, 4, 16, QChar('0'))
+                  .arg(faultList.join("，"));
+    }
+
+    m_log->appendLog("诊断", msg);
+    m_log->appendFileOnly("诊断", msg);
 }
 
 void MainWindow::openDataProcessing()
@@ -566,6 +638,7 @@ void MainWindow::openSettings()
         });
 
         m_log->appendLog("设置", "全局参数已应用并保存");
+        m_log->appendFileOnly("设置", "全局参数已应用并保存");
     });
 
     dlg.exec();
@@ -689,6 +762,7 @@ void MainWindow::openAutoProcessSettings()
         m_autoProcess->setSettings(aps);
 
         m_log->appendLog("自动流程", "设置已保存");
+        m_log->appendFileOnly("自动流程", "设置已保存");
     }
 }
 
@@ -720,32 +794,20 @@ void MainWindow::checkTcdPowerStatus()
         m_tcdPowered = false;
         m_comm->setTcdPowered(false);
         updateTcdPowerIcon();
-        if (m_monitorTab) m_monitorTab->setTcdPowered(false);   // 新增
+        if (m_monitorTab) m_monitorTab->setTcdPowered(false);
         return;
     }
 
-    m_checkActive = true;
-    m_tcdReplyReceived = false;
+    // 读缓存的故障诊断寄存器（慢速轮询每秒更新一次）
+    quint16 diag = m_comm->diagRegister();
+    bool tc4Fail = (diag & (1 << 0)) != 0;   // BIT0: TC4通信故障
+    bool tcdFail = (diag & (1 << 1)) != 0;   // BIT1: TCD通信故障
+    bool powered = !(tc4Fail || tcdFail);
 
-    m_comm->requestRegisterRead(0x0009, [this](quint16) {
-        if (m_checkActive) {
-            m_checkActive = false;
-            m_tcdPowered = true;
-            m_comm->setTcdPowered(true);
-            updateTcdPowerIcon();
-            if (m_monitorTab) m_monitorTab->setTcdPowered(true);   // 新增
-        }
-    });
-
-    QTimer::singleShot(300, this, [this]() {
-        if (m_checkActive) {
-            m_checkActive = false;
-            m_tcdPowered = false;
-            m_comm->setTcdPowered(false);
-            updateTcdPowerIcon();
-            if (m_monitorTab) m_monitorTab->setTcdPowered(false);   // 新增
-        }
-    });
+    m_tcdPowered = powered;
+    m_comm->setTcdPowered(powered);
+    updateTcdPowerIcon();
+    if (m_monitorTab) m_monitorTab->setTcdPowered(powered);
 }
 
 void MainWindow::updateTcdPowerIcon()
