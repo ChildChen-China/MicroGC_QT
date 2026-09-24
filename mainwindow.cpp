@@ -76,6 +76,34 @@ MainWindow::MainWindow(QWidget *parent)
     painterOn.drawEllipse(8, 6, 5, 5);
     m_iconTcdOn = QIcon(onPixmap);
 
+    // ========== 柱温箱开关图标 ==========
+    {
+        const int iconSize = 24;
+
+        // 关闭状态：深灰圆 + 蓝色边框
+        QPixmap offPixmap(iconSize, iconSize);
+        offPixmap.fill(Qt::transparent);
+        QPainter painterOff(&offPixmap);
+        painterOff.setRenderHint(QPainter::Antialiasing);
+        painterOff.setBrush(QColor(120, 120, 120));
+        painterOff.setPen(QPen(QColor(70, 70, 180), 2));
+        painterOff.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
+        m_iconOvenOff = QIcon(offPixmap);
+
+        // 开启状态：橙色圆 + 白边框 + 高光
+        QPixmap onPixmap(iconSize, iconSize);
+        onPixmap.fill(Qt::transparent);
+        QPainter painterOn(&onPixmap);
+        painterOn.setRenderHint(QPainter::Antialiasing);
+        painterOn.setBrush(QColor(230, 126, 34));
+        painterOn.setPen(QPen(Qt::white, 2));
+        painterOn.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
+        painterOn.setBrush(Qt::white);
+        painterOn.setPen(Qt::NoPen);
+        painterOn.drawEllipse(8, 6, 5, 5);
+        m_iconOvenOn = QIcon(onPixmap);
+    }
+
     // ========== TCD 电源状态定时器（每 20 秒） ==========
     m_tcdCheckTimer = new QTimer(this);
     m_tcdCheckTimer->setInterval(2000);
@@ -228,8 +256,15 @@ void MainWindow::createActions()
     toolbar->addWidget(settingsBtn);
 
     m_startStopAction = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始自动流程");
+    // ========== 复位按钮 ==========
     QAction *resetAct = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), "复位");
 
+    // ========== 柱温箱开关按钮 ==========
+    m_ovenAction = toolbar->addAction(m_iconOvenOff, "柱温箱：关");
+    m_ovenAction->setToolTip("点击开启/关闭柱温箱 (寄存器 0x0400)");
+    connect(m_ovenAction, &QAction::triggered, this, &MainWindow::onOvenToggle);
+
+    // ========== TCD 电源状态指示灯（不可点击，仅显示状态） ==========
     m_tcdPowerAction = toolbar->addAction(m_iconTcdOff, "TCD电源：未连接");
     m_tcdPowerAction->setToolTip("TCD电源状态");
 
@@ -254,6 +289,65 @@ void MainWindow::createActions()
     connect(hideLogAct, &QAction::toggled, this, &MainWindow::toggleLogVisible);
 }
 
+
+void MainWindow::onOvenToggle()
+{
+    if (!m_comm || !m_comm->isConnected()) {
+        QString msg = "未连接，无法控制柱温箱";
+        m_log->appendLog("柱温箱", msg);
+        m_log->appendFileOnly("柱温箱", msg);
+        return;
+    }
+
+    bool newState = !m_ovenEnabled;
+    quint16 expected = newState ? 1 : 0;
+
+    // 发送写命令 0x0400
+    m_comm->setColumnOvenEnable(newState);
+    m_ovenEnabled = newState;
+    updateOvenIcon();
+
+    QString actionMsg = newState ? "发送开启柱温箱命令" : "发送关闭柱温箱命令";
+    m_log->appendLog("柱温箱", actionMsg);
+    m_log->appendFileOnly("柱温箱", actionMsg);
+
+    // 500ms 后读取 0x0400 验证
+    QTimer::singleShot(500, this, [this, newState, expected]() {
+        if (!m_comm || !m_comm->isConnected()) return;
+
+        m_comm->requestRegisterRead(0x0400, [this, newState, expected](quint16 v) {
+            if (v == expected) {
+                QString msg = QString("柱温箱%1验证成功: 0x0400 = %2")
+                                  .arg(newState ? "开启" : "关闭").arg(v);
+                m_log->appendLog("柱温箱", msg);
+                m_log->appendFileOnly("柱温箱", msg);
+            } else {
+                QString msg = QString("柱温箱%1验证失败: 期望 %2，实际 %3")
+                                  .arg(newState ? "开启" : "关闭")
+                                  .arg(expected).arg(v);
+                m_log->appendLog("柱温箱", msg);
+                m_log->appendFileOnly("柱温箱", msg);
+
+                // 验证失败，恢复显示状态
+                m_ovenEnabled = !newState;
+                updateOvenIcon();
+            }
+        });
+    });
+}
+
+void MainWindow::updateOvenIcon()
+{
+    if (!m_ovenAction) return;
+
+    if (m_ovenEnabled) {
+        m_ovenAction->setIcon(m_iconOvenOn);
+        m_ovenAction->setText("柱温箱：开");
+    } else {
+        m_ovenAction->setIcon(m_iconOvenOff);
+        m_ovenAction->setText("柱温箱：关");
+    }
+}
 
 void MainWindow::createTabs()
 {

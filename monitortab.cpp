@@ -408,11 +408,12 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     layout->addWidget(basicGroup);
 
     // ---------- 灯丝功率 ----------
-    auto *powerGroup = new QGroupBox("灯丝功率", parent);
+    auto *powerGroup = new QGroupBox("FA/FB功率", parent);
     auto *powerLayout = new QVBoxLayout(powerGroup);
 
+
     auto *powerRowA = new QHBoxLayout;
-    powerRowA->addWidget(new QLabel("灯丝功率A:", powerGroup));
+    powerRowA->addWidget(new QLabel("FA功率:", powerGroup));
     m_powerAEdit = new QSpinBox(powerGroup);
     m_powerAEdit->setRange(0, 100);
     m_powerAEdit->setSuffix(" %");
@@ -423,12 +424,16 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
     powerLayout->addLayout(powerRowA);
 
     auto *powerRowB = new QHBoxLayout;
-    powerRowB->addWidget(new QLabel("灯丝功率B:", powerGroup));
+    powerRowB->addWidget(new QLabel("FB功率:", powerGroup));
     m_powerBEdit = new QSpinBox(powerGroup);
     m_powerBEdit->setRange(0, 100);
     m_powerBEdit->setSuffix(" %");
     QPushButton *setPowerBBtn = new QPushButton("设置", powerGroup);
     setPowerBBtn->setToolTip("FB 63\r  设置灯丝B功率");
+    powerRowB->addWidget(m_powerBEdit);
+    powerRowB->addWidget(setPowerBBtn);
+    powerLayout->addLayout(powerRowB);
+
     powerRowB->addWidget(m_powerBEdit);
     powerRowB->addWidget(setPowerBBtn);
     powerLayout->addLayout(powerRowB);
@@ -680,14 +685,30 @@ void MonitorTab::setPowerA()
 {
     if (!m_comm) return;
     int val = m_powerAEdit->value();
-    checkTcdPoweredBeforeSetPower(true, static_cast<quint16>(val));
+
+    // TODO: 设置灯丝功率前检查TCD是否上电，暂时不确定使用
+    // checkTcdPoweredBeforeSetPower(true, static_cast<quint16>(val));
+
+    // 直接发送 FA 功率设置
+    m_comm->setLampPowerA(static_cast<quint16>(val));
+    m_pendingPowerA = val;
+    m_hasPendingPowerA = true;
+    emit logMessage("TCD", QString("FA功率设置已发送: %1 %").arg(val));
 }
 
 void MonitorTab::setPowerB()
 {
     if (!m_comm) return;
     int val = m_powerBEdit->value();
-    checkTcdPoweredBeforeSetPower(false, static_cast<quint16>(val));
+
+    // TODO: 设置灯丝功率前检查TCD是否上电，暂时不确定使用
+    // checkTcdPoweredBeforeSetPower(false, static_cast<quint16>(val));
+
+    // 直接发送 FB 功率设置
+    m_comm->setLampPowerB(static_cast<quint16>(val));
+    m_pendingPowerB = val;
+    m_hasPendingPowerB = true;
+    emit logMessage("TCD", QString("FB功率设置已发送: %1 %").arg(val));
 }
 
 void MonitorTab::setLevelA()
@@ -878,10 +899,10 @@ void MonitorTab::checkSettingFeedback()
     verify("TCD温度", 0x03E8, m_pendingTemp, m_hasPendingTemp, m_retryTemp,
            [this]() { m_comm->setTcdTemperature(m_pendingTemp); });
 
-    verify("灯丝功率A", 0x03E9, m_pendingPowerA, m_hasPendingPowerA, m_retryPowerA,
+    verify("FA功率", 0x03E9, m_pendingPowerA, m_hasPendingPowerA, m_retryPowerA,
            [this]() { m_comm->setLampPowerA(m_pendingPowerA); });
 
-    verify("灯丝功率B", 0x03EA, m_pendingPowerB, m_hasPendingPowerB, m_retryPowerB,
+    verify("FB功率", 0x03EA, m_pendingPowerB, m_hasPendingPowerB, m_retryPowerB,
            [this]() { m_comm->setLampPowerB(m_pendingPowerB); });
 
     verify("最小精度", 0x03F1, m_pendingPrecision, m_hasPendingPrecision, m_retryPrecision,

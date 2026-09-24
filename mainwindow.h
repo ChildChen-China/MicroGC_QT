@@ -33,6 +33,8 @@ private slots:
     void updateTcdPowerIcon();
     void onFaultBitsChanged(quint16 diag);
 
+        void onOvenToggle();
+
 private:
     void createActions();
     void createTabs();
@@ -60,6 +62,13 @@ private:
 
     int m_flow1Voltage = 5;
     int m_flow2Voltage = 5;
+
+    QAction *m_ovenAction = nullptr;
+    bool m_ovenEnabled = false;
+    QIcon m_iconOvenOff;
+    QIcon m_iconOvenOn;
+
+        void updateOvenIcon();
 };
 
 #endif // MAINWINDOW_H

@@ -423,8 +423,8 @@ void Communication::writeRegister(quint16 address, quint16 value, const QString 
 }
 
 void Communication::setTcdTemperature(quint16 value) { writeRegister(0x03E8, value, "设置TCD温度"); }
-void Communication::setLampPowerA(quint16 value) { writeRegister(0x03E9, value, "设置灯丝功率A"); }
-void Communication::setLampPowerB(quint16 value) { writeRegister(0x03EA, value, "设置灯丝功率B"); }
+void Communication::setLampPowerA(quint16 value) { writeRegister(0x03E9, value, "设置FA功率"); }
+void Communication::setLampPowerB(quint16 value) { writeRegister(0x03EA, value, "设置FB功率"); }
 void Communication::setChannelAVoltage(quint16 value) { writeRegister(0x03ED, value, "设置A通道电压"); }
 void Communication::setChannelBVoltage(quint16 value) { writeRegister(0x03EE, value, "设置B通道电压"); }
 void Communication::setChannelABVoltage(quint16 value) { writeRegister(0x03EF, value, "设置A-B通道电压"); }
