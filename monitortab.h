@@ -111,7 +111,6 @@ private slots:
     void toggleFilterAB();
     void updateDisplayLength();
     void checkSettingFeedback();
-    void onPowerCheckTimeout();
 
 private:
     void setupControlPanel(QVBoxLayout *layout);
@@ -178,11 +177,9 @@ private:
     QTimer *m_plotTimer;
 
     // TCD 通电检查（灯丝功率设置前）
-    QTimer *m_powerCheckTimer;
+
     bool m_powerCheckInProgress = false;
     bool m_powerCheckIsA = false;
-    int m_powerCheckAttempts = 0;
-    bool m_powerCheckReplyReceived = false;
 
     bool m_tcdPowered = false;        // TCD 电源当前状态
     qint64 m_tcdActiveMs = 0;         // 累积的有效采样时间（毫秒）

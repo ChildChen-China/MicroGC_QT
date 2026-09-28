@@ -227,11 +227,6 @@ MonitorTab::MonitorTab(QWidget *parent)
     connect(m_feedbackTimer, &QTimer::timeout, this, &MonitorTab::checkSettingFeedback);
     m_feedbackTimer->start();
 
-    // 灯丝安全检查定时器
-    m_powerCheckTimer = new QTimer(this);
-    m_powerCheckTimer->setSingleShot(true);
-    connect(m_powerCheckTimer, &QTimer::timeout, this, &MonitorTab::onPowerCheckTimeout);
-
     // 绘图刷新定时器
     m_plotTimer->setInterval(50);
     connect(m_plotTimer, &QTimer::timeout, this, [this]() { updatePlots(false); });
@@ -687,13 +682,13 @@ void MonitorTab::setPowerA()
     int val = m_powerAEdit->value();
 
     // TODO: 设置灯丝功率前检查TCD是否上电，暂时不确定使用
-    // checkTcdPoweredBeforeSetPower(true, static_cast<quint16>(val));
+     //checkTcdPoweredBeforeSetPower(true, static_cast<quint16>(val));
 
-    // 直接发送 FA 功率设置
-    m_comm->setLampPowerA(static_cast<quint16>(val));
-    m_pendingPowerA = val;
-    m_hasPendingPowerA = true;
-    emit logMessage("TCD", QString("FA功率设置已发送: %1 %").arg(val));
+     m_comm->setLampPowerA(static_cast<quint16>(val));
+     m_pendingPowerA=val;
+     m_hasPendingPowerA=true;
+     emit logMessage("TCD",QString("FA功率设置已发送：%1 %").arg(val));
+
 }
 
 void MonitorTab::setPowerB()
@@ -702,13 +697,12 @@ void MonitorTab::setPowerB()
     int val = m_powerBEdit->value();
 
     // TODO: 设置灯丝功率前检查TCD是否上电，暂时不确定使用
-    // checkTcdPoweredBeforeSetPower(false, static_cast<quint16>(val));
+     //checkTcdPoweredBeforeSetPower(false, static_cast<quint16>(val));
 
-    // 直接发送 FB 功率设置
-    m_comm->setLampPowerB(static_cast<quint16>(val));
-    m_pendingPowerB = val;
-    m_hasPendingPowerB = true;
-    emit logMessage("TCD", QString("FB功率设置已发送: %1 %").arg(val));
+     m_comm->setLampPowerB(static_cast<quint16>(val));
+     m_pendingPowerB=val;
+     m_hasPendingPowerB=true;
+     emit logMessage("TCD",QString("FB功率设置已发送：%1 %").arg(val));
 }
 
 void MonitorTab::setLevelA()
@@ -830,41 +824,6 @@ void MonitorTab::checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value)
     });
 }
 
-void MonitorTab::onPowerCheckTimeout()
-{
-    m_powerCheckAttempts++;
-
-    if (m_powerCheckReplyReceived) {
-        m_powerCheckInProgress = false;
-        m_powerCheckTimer->stop();
-        emit logMessage("TCD", "TCD已通电，禁止设置灯丝功率！");
-        return;
-    }
-
-    if (m_powerCheckAttempts < 2) {
-        m_powerCheckReplyReceived = false;
-        m_comm->requestRegisterRead(0x0009, [this](quint16) {   // 改为 0x0009
-            m_powerCheckReplyReceived = true;
-        });
-        m_powerCheckTimer->start(300);
-    } else {
-        m_powerCheckInProgress = false;
-        m_powerCheckTimer->stop();
-
-        quint16 val = (m_powerCheckIsA) ? m_powerAEdit->value() : m_powerBEdit->value();
-        if (m_powerCheckIsA) {
-            m_comm->setLampPowerA(val);
-            m_pendingPowerA = val;
-            m_hasPendingPowerA = true;
-            emit logMessage("TCD", QString("灯丝功率A设置已发送: %1 %").arg(val));
-        } else {
-            m_comm->setLampPowerB(val);
-            m_pendingPowerB = val;
-            m_hasPendingPowerB = true;
-            emit logMessage("TCD", QString("灯丝功率B设置已发送: %1 %").arg(val));
-        }
-    }
-}
 
 //==========================================================
 // 设置反馈验证

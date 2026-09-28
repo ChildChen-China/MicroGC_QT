@@ -175,7 +175,7 @@ FlowControllerDialog::FlowControllerDialog(const QString &title, QWidget *parent
     m_currentLabel = currentLabel;
 
     auto *setpointSpin = new QSpinBox(this);
-    setpointSpin->setRange(1, 1000);          // 协议范围 1~1000
+    setpointSpin->setRange(1, 5000);          // 协议范围 1~5000
     m_setFlowBtn = new QPushButton("设置", this);
     QWidget *rowWidget = new QWidget(this);
     QHBoxLayout *rowLayout = new QHBoxLayout(rowWidget);
