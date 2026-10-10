@@ -7,11 +7,11 @@ Communication::Communication(QObject *parent)
     : QObject(parent)
 {
     m_fastTimer = new QTimer(this);
-    m_fastTimer->setInterval(30);
+    m_fastTimer->setInterval(25);                 // TCD 电压每 25ms 更新
     m_fastTimer->setTimerType(Qt::PreciseTimer);
 
     m_slowTimer = new QTimer(this);
-    m_slowTimer->setInterval(1000);
+    m_slowTimer->setInterval(1000);               // 慢速 1s
 
     connect(m_fastTimer, &QTimer::timeout, this, &Communication::onFastTimer);
     connect(m_slowTimer, &QTimer::timeout, this, &Communication::onSlowTimer);
@@ -25,6 +25,7 @@ Communication::~Communication()
 
 void Communication::setTcdPowered(bool powered)
 {
+    // 仅用于指示灯，不再影响轮询
     m_tcdPowered = powered;
 }
 
@@ -86,11 +87,11 @@ void Communication::stopPolling()
 }
 
 //-------------------------------------------------------------
-// 定时器：入队
+// 快速轮询：读 0x000B~0x0010（6个寄存器）合成 3 个 s32
 //-------------------------------------------------------------
 void Communication::onFastTimer()
 {
-    if (!m_tcdPowered || !m_connected)
+    if (!m_connected)
         return;
 
     if (m_busy && m_current.type == Request::FastPoll)
@@ -102,13 +103,17 @@ void Communication::onFastTimer()
 
     Request req;
     req.type = Request::FastPoll;
-    req.address = 0x0004;
-    req.count = 3;
+    req.address = 0x000B;
+    req.count = 6;      // 0x000B ~ 0x0010
     enqueue(req);
 
     m_lastFastPollTime = QDateTime::currentMSecsSinceEpoch();
 }
 
+//-------------------------------------------------------------
+// 慢速轮询：统一读 0x0000~0x0003 + 0x0007~0x000A
+// 不再根据 TCD 上电状态切换
+//-------------------------------------------------------------
 void Communication::onSlowTimer()
 {
     if (!m_connected)
@@ -121,49 +126,21 @@ void Communication::onSlowTimer()
             return;
     }
 
-    if (m_tcdPowered) {
-        // 上电：0x0000~0x0003
-        Request r1;
-        r1.type = Request::SlowPoll;
-        r1.address = 0x0000;
-        r1.count = 4;
-        enqueue(r1);
+    // 读 0x0000~0x0003
+    Request r1;
+    r1.type = Request::SlowPoll;
+    r1.address = 0x0000;
+    r1.count = 4;
+    enqueue(r1);
 
-        // 上电：0x0007~0x0009
-        Request r2;
-        r2.type = Request::SlowPoll;
-        r2.address = 0x0007;
-        r2.count = 3;
-        enqueue(r2);
-
-        // 无论上电与否都读 0x000A
-        Request r3;
-        r3.type = Request::SlowPoll;
-        r3.address = 0x000A;
-        r3.count = 1;
-        enqueue(r3);
-    } else {
-        // 断电：只读柱温箱和压力
-        Request r1;
-        r1.type = Request::SlowPoll;
-        r1.address = 0x0000;
-        r1.count = 1;
-        enqueue(r1);
-
-        Request r2;
-        r2.type = Request::SlowPoll;
-        r2.address = 0x0003;
-        r2.count = 1;
-        enqueue(r2);
-
-        // 断电时也读 0x000A，用于判断是否恢复上电
-        Request r3;
-        r3.type = Request::SlowPoll;
-        r3.address = 0x000A;
-        r3.count = 1;
-        enqueue(r3);
-    }
+    // 读 0x0007~0x000A
+    Request r2;
+    r2.type = Request::SlowPoll;
+    r2.address = 0x0007;
+    r2.count = 4;
+    enqueue(r2);
 }
+
 //-------------------------------------------------------------
 // 队列管理
 //-------------------------------------------------------------
@@ -202,13 +179,13 @@ void Communication::processQueue()
         return;
 
     // 追赶机制：队列空且快速轮询已逾期
-    if (m_queue.isEmpty() && m_tcdPowered) {
+    if (m_queue.isEmpty()) {
         qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (m_lastFastPollTime == 0 || now - m_lastFastPollTime >= 20) {
             Request req;
             req.type = Request::FastPoll;
-            req.address = 0x0004;
-            req.count = 3;
+            req.address = 0x000B;
+            req.count = 6;
             m_queue.append(req);
             m_lastFastPollTime = now;
         }
@@ -228,9 +205,11 @@ quint16 Communication::diagRegister() const
     return m_diagRegister;
 }
 
+//-------------------------------------------------------------
+// 发送请求
+//-------------------------------------------------------------
 void Communication::sendRequest(const Request &req)
 {
-    // ========== 构造报文的十六进制表示 ==========
     auto buildHexFrame = [](quint8 funcCode, quint16 startAddr, quint16 countOrValue,
                             const QVector<quint16> &values) -> QString {
         QString hex;
@@ -298,7 +277,6 @@ void Communication::sendRequest(const Request &req)
     else {
         QModbusDataUnit unit(QModbusDataUnit::HoldingRegisters, req.address, req.count);
 
-        // 只有 Read / ReadRange 才输出日志，FastPoll / SlowPoll 静默
         bool logThisRead = (req.type == Request::Read || req.type == Request::ReadRange);
         if (logThisRead) {
             QString frameHex = buildHexFrame(0x03, req.address, req.count, {});
@@ -344,7 +322,6 @@ void Communication::sendRequest(const Request &req)
             } else {
                 if (req.type == Request::Read) {
                     if (req.readCallback) req.readCallback(0);
-                    // 手动读取失败：输出日志
                     emit logPacket("接收", QString("读取失败 [寄存器 0x%1]: %2")
                                                .arg(req.address, 4, 16, QChar('0'))
                                                .arg(reply->errorString()));
@@ -356,7 +333,7 @@ void Communication::sendRequest(const Request &req)
                                                .arg(req.count)
                                                .arg(reply->errorString()));
                 }
-                // FastPoll / SlowPoll 静默（避免刷屏）
+                // FastPoll / SlowPoll 静默
             }
             m_busy = false;
             processQueue();
@@ -369,13 +346,19 @@ void Communication::sendRequest(const Request &req)
 //-------------------------------------------------------------
 void Communication::processFastResponse(const QModbusDataUnit &unit)
 {
-    if (unit.valueCount() < 3)
+    // 0x000B~0x0010：A(s32) B(s32) AB(s32)，大端高字在前
+    if (unit.valueCount() < 6)
         return;
 
     QMutexLocker locker(&m_mutex);
-    m_tcdVoltageA  = static_cast<qint16>(unit.value(0));
-    m_tcdVoltageB  = static_cast<qint16>(unit.value(1));
-    m_tcdVoltageAB = static_cast<qint16>(unit.value(2));
+
+    quint32 rawA = (static_cast<quint32>(unit.value(0)) << 16) | unit.value(1);
+    quint32 rawB = (static_cast<quint32>(unit.value(2)) << 16) | unit.value(3);
+    quint32 rawAB = (static_cast<quint32>(unit.value(4)) << 16) | unit.value(5);
+
+    m_tcdVoltageA  = static_cast<qint32>(rawA);
+    m_tcdVoltageB  = static_cast<qint32>(rawB);
+    m_tcdVoltageAB = static_cast<qint32>(rawAB);
 }
 
 void Communication::processSlowResponse(const QModbusDataUnit &unit, quint16 startAddr)
@@ -383,30 +366,16 @@ void Communication::processSlowResponse(const QModbusDataUnit &unit, quint16 sta
     QMutexLocker locker(&m_mutex);
 
     if (startAddr == 0x0000) {
-        if (unit.valueCount() >= 1) m_columnOven1Temp = unit.value(0);
-        if (unit.valueCount() >= 2) m_flow1 = unit.value(1);
-        if (unit.valueCount() >= 3) m_flow2 = unit.value(2);
-        if (unit.valueCount() >= 4) m_pressure = static_cast<qint16>(unit.value(3));
-    } else if (startAddr == 0x0003) {
-        if (unit.valueCount() >= 1) m_pressure = static_cast<qint16>(unit.value(0));
+        if (unit.valueCount() >= 1) m_tc4Temp  = unit.value(0);   // TC4温度
+        if (unit.valueCount() >= 2) m_flow1    = unit.value(1);   // 流量1
+        if (unit.valueCount() >= 3) m_flow2    = unit.value(2);   // 流量2
+        if (unit.valueCount() >= 4) m_pressure = unit.value(3);   // 压力
     } else if (startAddr == 0x0007) {
-        if (unit.valueCount() >= 1) m_tcdPowerFA = static_cast<qint16>(unit.value(0));
-        if (unit.valueCount() >= 2) m_tcdPowerFB = unit.value(1);
-        if (unit.valueCount() >= 3) m_tcdMeasureTemp = unit.value(2);
+        if (unit.valueCount() >= 1) m_tcdPowerFA      = unit.value(0);
+        if (unit.valueCount() >= 2) m_tcdPowerFB      = unit.value(1);
+        if (unit.valueCount() >= 3) m_tcdMeasureTemp  = unit.value(2);   // 0.01°C/计数
+        if (unit.valueCount() >= 4) m_diagRegister    = unit.value(3);   // 故障状态字
     }
-    else if (startAddr == 0x000A) {
-      if (unit.valueCount() >= 1) {
-        quint16 newDiag = unit.value(0);
-        bool changed = (newDiag != m_diagRegister);
-        m_diagRegister = newDiag;
-
-        // 如果故障位变化，发信号通知界面
-        if (changed) {
-            emit faultBitsChanged(newDiag);
-        }
-      }
-    }
-
 }
 
 //-------------------------------------------------------------
@@ -425,16 +394,16 @@ void Communication::writeRegister(quint16 address, quint16 value, const QString 
 void Communication::setTcdTemperature(quint16 value) { writeRegister(0x03E8, value, "设置TCD温度"); }
 void Communication::setLampPowerA(quint16 value) { writeRegister(0x03E9, value, "设置FA功率"); }
 void Communication::setLampPowerB(quint16 value) { writeRegister(0x03EA, value, "设置FB功率"); }
-void Communication::setChannelAVoltage(quint16 value) { writeRegister(0x03ED, value, "设置A通道电压"); }
-void Communication::setChannelBVoltage(quint16 value) { writeRegister(0x03EE, value, "设置B通道电压"); }
-void Communication::setChannelABVoltage(quint16 value) { writeRegister(0x03EF, value, "设置A-B通道电压"); }
-void Communication::setZS(quint16 value) { writeRegister(0x03F0, value, "启动调节流程"); }
-void Communication::setPrecision(quint16 value) { writeRegister(0x03F1, value, "设置最小精度"); }
-void Communication::setRF(quint16 value) { writeRegister(0x03F2, value, "复位调节流程错误标志"); }
-void Communication::setColumnOven1Temperature(quint16 value) { writeRegister(0x03FF, value, "设置柱温箱1温度"); }
-void Communication::setColumnOven2Temperature(quint16 value) { writeRegister(0x03FF, value, "设置柱温箱2温度"); }
-void Communication::setColumnOvenEnable(bool enable) { writeRegister(0x0400, enable ? 1 : 0, enable ? "开启柱温箱" : "关闭柱温箱"); }
-void Communication::setSixWayValve1(bool on) { writeRegister(0x0404, on ? 1 : 0, on ? "六通阀1开启" : "六通阀1关闭"); }
+void Communication::setChannelAVoltage(quint16 value) { writeRegister(0x03ED, value, "设置ZA电压"); }
+void Communication::setChannelBVoltage(quint16 value) { writeRegister(0x03EE, value, "设置ZB电压"); }
+void Communication::setChannelABVoltage(quint16 value) { writeRegister(0x03EF, value, "设置ZR电压"); }
+void Communication::setZS(quint16 value) { writeRegister(0x03F0, value, "TCD调零动作"); }
+void Communication::setPrecision(quint16 value) { writeRegister(0x03F1, value, "设置最小调节精度"); }
+void Communication::setRF(quint16 value) { writeRegister(0x03F2, value, "复位TCD错误标志"); }
+void Communication::setColumnOven1Temperature(quint16 value) { writeRegister(0x03FF, value, "设置TC4目标温度"); }
+void Communication::setColumnOven2Temperature(quint16 value) { writeRegister(0x03FF, value, "设置TC4目标温度"); }
+void Communication::setColumnOvenEnable(bool enable) { writeRegister(0x0400, enable ? 1 : 0, enable ? "开启TC4加热" : "关闭TC4加热"); }
+void Communication::setSixWayValve1(bool on) { writeRegister(0x0404, on ? 1 : 0, on ? "六通阀开启" : "六通阀关闭"); }
 void Communication::setSixWayValve2(bool on) { writeRegister(0x0404, on ? 2 : 0, on ? "六通阀2开启" : "六通阀2关闭"); }
 void Communication::setFlow1Voltage(quint16 value) { writeRegister(0x0402, value, "设置流量控制器1电压"); }
 void Communication::setFlow2Voltage(quint16 value) { writeRegister(0x0403, value, "设置流量控制器2电压"); }
@@ -445,13 +414,13 @@ void Communication::setValveBit(int valveIndex, bool on)
     if (on) m_valveState |= (1 << valveIndex);
     else m_valveState &= ~(1 << valveIndex);
     writeRegister(0x0401, m_valveState,
-                  QString("设置电磁阀 NV%1 %2").arg(valveIndex+1).arg(on ? "开启" : "关闭"));
+                  QString("设置主电磁阀 %1").arg(on ? "开启" : "关闭"));
 }
 
 void Communication::setAllValvesOff()
 {
     m_valveState = 0;
-    writeRegister(0x0401, m_valveState, "关闭所有电磁阀");
+    writeRegister(0x0401, m_valveState, "关闭主电磁阀");
 }
 
 //-------------------------------------------------------------
@@ -488,7 +457,8 @@ void Communication::requestRegisterRead(quint16 address, std::function<void(quin
     enqueue(req);
 }
 
-void Communication::requestRegisterReadRange(quint16 startAddr, quint16 count, std::function<void(const QVector<quint16>&)> callback)
+void Communication::requestRegisterReadRange(quint16 startAddr, quint16 count,
+                                             std::function<void(const QVector<quint16>&)> callback)
 {
     Request req;
     req.type = Request::ReadRange;
@@ -529,13 +499,65 @@ bool Communication::isConnected() const
 //-------------------------------------------------------------
 // 数据 getter
 //-------------------------------------------------------------
-double Communication::columnOven1Temp() const { QMutexLocker locker(&m_mutex); return m_columnOven1Temp; }
-double Communication::flow1() const { QMutexLocker locker(&m_mutex); return m_flow1; }
-double Communication::flow2() const { QMutexLocker locker(&m_mutex); return m_flow2; }
-double Communication::pressure() const { QMutexLocker locker(&m_mutex); return m_pressure; }
-double Communication::tcdVoltageA() const { QMutexLocker locker(&m_mutex); return m_tcdVoltageA; }
-double Communication::tcdVoltageB() const { QMutexLocker locker(&m_mutex); return m_tcdVoltageB; }
-double Communication::tcdVoltageAB() const { QMutexLocker locker(&m_mutex); return m_tcdVoltageAB; }
-double Communication::tcdPowerFA() const { QMutexLocker locker(&m_mutex); return m_tcdPowerFA; }
-double Communication::tcdPowerFB() const { QMutexLocker locker(&m_mutex); return m_tcdPowerFB; }
-double Communication::tcdMeasureTemp() const{QMutexLocker locker(&m_mutex);return static_cast<int>(m_tcdMeasureTemp / 100.0);}
+double Communication::tc4Temp() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_tc4Temp;
+}
+
+double Communication::flow1() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_flow1;
+}
+
+double Communication::flow2() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_flow2;
+}
+
+double Communication::pressure() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_pressure;
+}
+
+double Communication::tcdVoltageA() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_tcdVoltageA;
+}
+
+double Communication::tcdVoltageB() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_tcdVoltageB;
+}
+
+double Communication::tcdVoltageAB() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_tcdVoltageAB;
+}
+
+double Communication::tcdPowerFA() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_tcdPowerFA;
+}
+
+double Communication::columnOven1Temp() const { return tc4Temp(); }
+
+double Communication::tcdPowerFB() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_tcdPowerFB;
+}
+
+double Communication::tcdMeasureTemp() const
+{
+    QMutexLocker locker(&m_mutex);
+    // 0x0009 是 0.01°C/计数，返回 °C
+    return m_tcdMeasureTemp / 100.0;
+}

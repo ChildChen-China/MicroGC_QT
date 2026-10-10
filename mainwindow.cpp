@@ -31,6 +31,37 @@
 #include <QColor>
 #include <QPen>
 #include <QDoubleSpinBox>
+
+#include <QSet>
+#include <QMouseEvent>
+
+//==========================================================
+// 自定义 QMenu：指定 action 点击后菜单不关闭
+//==========================================================
+class StayOpenMenu : public QMenu
+{
+public:
+    explicit StayOpenMenu(QWidget *parent = nullptr) : QMenu(parent) {}
+
+    void setStayOpenActions(const QList<QAction*> &actions) {
+        for (QAction *a : actions) m_stayOpen.insert(a);
+    }
+
+protected:
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        QAction *action = activeAction();
+        if (action && m_stayOpen.contains(action)) {
+            action->trigger();
+            return;   // 不调用基类，菜单不关闭
+        }
+        QMenu::mouseReleaseEvent(e);
+    }
+
+private:
+    QSet<QAction*> m_stayOpen;
+};
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_tabs(nullptr)
@@ -44,43 +75,44 @@ MainWindow::MainWindow(QWidget *parent)
     , m_tcdPowerAction(nullptr)
     , m_tcdCheckTimer(nullptr)
     , m_tcdPowered(false)
-    , m_tcdReplyReceived(false)
-    , m_checkActive(false)
 {
     setWindowTitle("MicroGC");
-    resize(1200, 900);
+    resize(1300, 950);
+    setMinimumSize(1200, 720);
 
     m_comm = new Communication(this);
     m_log = new LogWidget(this);
 
     // ========== TCD 电源状态图标 ==========
-    const int iconSize = 24;
-    QPixmap offPixmap(iconSize, iconSize);
-    offPixmap.fill(Qt::transparent);
-    QPainter painterOff(&offPixmap);
-    painterOff.setRenderHint(QPainter::Antialiasing);
-    painterOff.setBrush(QColor(100, 100, 100));
-    painterOff.setPen(QPen(Qt::black, 2));
-    painterOff.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
-    m_iconTcdOff = QIcon(offPixmap);
-
-    QPixmap onPixmap(iconSize, iconSize);
-    onPixmap.fill(Qt::transparent);
-    QPainter painterOn(&onPixmap);
-    painterOn.setRenderHint(QPainter::Antialiasing);
-    painterOn.setBrush(QColor(0, 255, 0));
-    painterOn.setPen(QPen(Qt::black, 2));
-    painterOn.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
-    painterOn.setBrush(Qt::white);
-    painterOn.setPen(Qt::NoPen);
-    painterOn.drawEllipse(8, 6, 5, 5);
-    m_iconTcdOn = QIcon(onPixmap);
-
-    // ========== 柱温箱开关图标 ==========
     {
         const int iconSize = 24;
 
-        // 关闭状态：深灰圆 + 蓝色边框
+        QPixmap offPixmap(iconSize, iconSize);
+        offPixmap.fill(Qt::transparent);
+        QPainter painterOff(&offPixmap);
+        painterOff.setRenderHint(QPainter::Antialiasing);
+        painterOff.setBrush(QColor(100, 100, 100));
+        painterOff.setPen(QPen(Qt::black, 2));
+        painterOff.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
+        m_iconTcdOff = QIcon(offPixmap);
+
+        QPixmap onPixmap(iconSize, iconSize);
+        onPixmap.fill(Qt::transparent);
+        QPainter painterOn(&onPixmap);
+        painterOn.setRenderHint(QPainter::Antialiasing);
+        painterOn.setBrush(QColor(0, 230, 64));
+        painterOn.setPen(QPen(Qt::white, 2));
+        painterOn.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
+        painterOn.setBrush(Qt::white);
+        painterOn.setPen(Qt::NoPen);
+        painterOn.drawEllipse(8, 6, 5, 5);
+        m_iconTcdOn = QIcon(onPixmap);
+    }
+
+    // ========== TC4 加热开关图标 ==========
+    {
+        const int iconSize = 24;
+
         QPixmap offPixmap(iconSize, iconSize);
         offPixmap.fill(Qt::transparent);
         QPainter painterOff(&offPixmap);
@@ -90,7 +122,6 @@ MainWindow::MainWindow(QWidget *parent)
         painterOff.drawEllipse(2, 2, iconSize - 4, iconSize - 4);
         m_iconOvenOff = QIcon(offPixmap);
 
-        // 开启状态：橙色圆 + 白边框 + 高光
         QPixmap onPixmap(iconSize, iconSize);
         onPixmap.fill(Qt::transparent);
         QPainter painterOn(&onPixmap);
@@ -104,22 +135,19 @@ MainWindow::MainWindow(QWidget *parent)
         m_iconOvenOn = QIcon(onPixmap);
     }
 
-    // ========== TCD 电源状态定时器（每 20 秒） ==========
+    // ========== TCD 电源状态检查定时器 ==========
     m_tcdCheckTimer = new QTimer(this);
-    m_tcdCheckTimer->setInterval(2000);
-    m_tcdCheckTimer->setTimerType(Qt::PreciseTimer);
+    m_tcdCheckTimer->setInterval(1000);
+    m_tcdCheckTimer->setTimerType(Qt::CoarseTimer);
     connect(m_tcdCheckTimer, &QTimer::timeout, this, &MainWindow::checkTcdPowerStatus);
 
-    // ========== 自动流程管理器 ==========
-    // ========== 自动流程日志：界面 + 文件 ==========
+    // ========== 自动流程 ==========
     m_autoProcess = new AutoProcessManager(m_comm, this);
     connect(m_autoProcess, &AutoProcessManager::logMessage, this,
             [this](const QString &type, const QString &event) {
-                m_log->appendLog(type, event);        // 上界面
-                m_log->appendFileOnly(type, event);   // 写文件
+                m_log->appendLog(type, event);
+                m_log->appendFileOnly(type, event);
             });
-
-    // 自动流程状态变化：界面 + 文件
     connect(m_autoProcess, &AutoProcessManager::stateChanged, this,
             [this](const QString &state) {
                 QString msg = "状态: " + state;
@@ -135,28 +163,37 @@ MainWindow::MainWindow(QWidget *parent)
                         m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
                     }
                 }
+
+                // ★ 新增：通知 ControlTab 自动流程的运行状态
+                if (m_controlTab) {
+                    m_controlTab->setAutoProcessRunning(state != "空闲");
+                }
             });
 
-    // ========== 报文日志：界面 + 文件 ==========
-    // FastPoll/SlowPoll 已在 sendRequest 中静默，不会 emit logPacket，
-    // 所以这里只会收到：写命令、按需读取（Read/ReadRange）的报文，
-    // 全部上界面 + 写文件，不会刷屏。
+    // ========== 通信信号 ==========
     connect(m_comm, &Communication::logPacket, this,
             [this](const QString &direction, const QString &dataHex) {
                 QString msg = QString("[%1] %2").arg(direction, dataHex);
-                m_log->appendLog("通信", msg);        // 上界面
-                m_log->appendFileOnly("通信", msg);   // 写文件
+                m_log->appendLog("通信", msg);
+                m_log->appendFileOnly("通信", msg);
             });
-
-    // ========== 通信状态消息：界面 + 文件 ==========
     connect(m_comm, &Communication::statusMessage, this, [this](const QString &msg) {
-        m_log->appendLog("通信", msg);        // 上界面
-        m_log->appendFileOnly("通信", msg);   // 写文件
+        m_log->appendLog("通信", msg);
+        m_log->appendFileOnly("通信", msg);
     });
-
     connect(m_comm, &Communication::connected, this, &MainWindow::onCommunicationConnected);
     connect(m_comm, &Communication::disconnected, this, &MainWindow::onCommunicationDisconnected);
 
+    // 0x000A 故障位变化
+    connect(m_comm, &Communication::slowDataUpdated, this, [this]() {
+        quint16 diag = m_comm->diagRegister();
+        if (diag != m_lastDiag) {
+            m_lastDiag = diag;
+            onFaultBitsChanged(diag);
+        }
+    });
+
+    // 自动流程设备状态（六通阀/电磁阀图形更新）
     connect(m_autoProcess, &AutoProcessManager::deviceStateChanged,
             this, [this](const QString &device, bool state) {
                 if (device == "六通阀" || device == "电磁阀") {
@@ -167,56 +204,45 @@ MainWindow::MainWindow(QWidget *parent)
     createActions();
     createTabs();
 
-    // ================= 启动时从 QSettings 加载采集点数和均点设置 =================
-    if (m_monitorTab) {
-        QSettings settings("MyCompany", "MicroGC");
-        int collectPoints = settings.value("global/collectPoints", 1000).toInt();
-        int averagePoints = settings.value("global/averagePoints", 5).toInt();
-        m_monitorTab->setCollectPoints(collectPoints);
-        m_monitorTab->setAveragePoints(averagePoints);
+    // ==========================================================
+    // 启动时立即应用 QSettings 中保存的"全局参数"
+    // 保证每次打开软件，采集点数 / 均点数就与上次关闭一致
+    // ==========================================================
+    {
+        QSettings s("MyCompany", "MicroGC");
+
+        int collectPoints = s.value("global/collectPoints", 1000).toInt();
+        int averagePoints = s.value("global/averagePoints", 5).toInt();
+
+        if (m_monitorTab) {
+            m_monitorTab->setCollectPoints(collectPoints);
+            m_monitorTab->setAveragePoints(averagePoints);
+        }
     }
 
     m_tcdCheckTimer->start();
 
-    connect(m_autoProcess, &AutoProcessManager::saveDataTriggered,
-            m_monitorTab, &MonitorTab::startAutoSave);
+    // ========== 自动流程 → MonitorTab（新接口） ==========
+    connect(m_autoProcess, &AutoProcessManager::startDataSaveTriggered,
+            m_monitorTab, &MonitorTab::startDataSaveNow);
     connect(m_autoProcess, &AutoProcessManager::stopDataSaveTriggered,
             m_monitorTab, &MonitorTab::stopDataSave);
-    connect(m_comm, &Communication::faultBitsChanged,
-            this, &MainWindow::onFaultBitsChanged);
 
+    connect(m_autoProcess, &AutoProcessManager::polarityOnTriggered,
+            m_monitorTab, &MonitorTab::startPolarityReversal);
+    connect(m_autoProcess, &AutoProcessManager::polarityOffTriggered,
+            m_monitorTab, &MonitorTab::stopPolarityReversal);
+
+    // ========== 中央布局 ==========
     QWidget *central = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(central);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->addWidget(m_tabs, 1);
+    m_log->setMaximumHeight(220);
     layout->addWidget(m_log, 0);
     setCentralWidget(central);
 }
 
-class StayOpenMenu : public QMenu
-{
-public:
-    explicit StayOpenMenu(QWidget *parent = nullptr) : QMenu(parent) {}
-
-    void setStayOpenActions(const QList<QAction*> &actions) {
-        for (QAction *a : actions) m_stayOpen.insert(a);
-    }
-
-protected:
-    void mouseReleaseEvent(QMouseEvent *e) override
-    {
-        QAction *action = activeAction();
-        if (action && m_stayOpen.contains(action)) {
-            // 手动触发 action，不调用基类，菜单保持打开
-            action->trigger();
-            return;
-        }
-        QMenu::mouseReleaseEvent(e);
-    }
-
-private:
-    QSet<QAction*> m_stayOpen;
-};
 
 void MainWindow::createActions()
 {
@@ -225,12 +251,15 @@ void MainWindow::createActions()
     toolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     toolbar->setIconSize(QSize(24, 24));
 
+    // ========== 连接按钮 ==========
     QAction *connectAct = toolbar->addAction(style()->standardIcon(QStyle::SP_DriveNetIcon), "连接");
     m_connectAction = connectAct;
     m_iconConnectDefault = connectAct->icon();
 
+    // ========== 数据处理 ==========
     QAction *dataAct = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogContentsView), "数据处理");
 
+    // ========== 设置下拉菜单 ==========
     QToolButton *settingsBtn = new QToolButton(this);
     settingsBtn->setText("设置");
     settingsBtn->setIcon(style()->standardIcon(QStyle::SP_FileDialogInfoView));
@@ -248,28 +277,30 @@ void MainWindow::createActions()
     hideABAct->setCheckable(true);
     QAction *hideLogAct = settingsMenu->addAction("隐藏日志");
     hideLogAct->setCheckable(true);
-
-    // 四个勾选项点击后菜单保持打开，可连续勾选
+    // 四个勾选项点击后菜单保持打开
     settingsMenu->setStayOpenActions({hideAAct, hideBAct, hideABAct, hideLogAct});
-
     settingsBtn->setMenu(settingsMenu);
     toolbar->addWidget(settingsBtn);
 
+    // ========== 开始/停止 ==========
     m_startStopAction = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始自动流程");
-    // ========== 复位按钮 ==========
+
+    // ========== 复位 ==========
     QAction *resetAct = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), "复位");
 
-    // ========== 柱温箱开关按钮 ==========
-    m_ovenAction = toolbar->addAction(m_iconOvenOff, "柱温箱：关");
-    m_ovenAction->setToolTip("点击开启/关闭柱温箱 (寄存器 0x0400)");
+    // ========== TC4 加热开关 ==========
+    m_ovenAction = toolbar->addAction(m_iconOvenOff, "TC4：关");
+    m_ovenAction->setToolTip("点击开启/关闭 TC4 加热 (寄存器 0x0400)");
     connect(m_ovenAction, &QAction::triggered, this, &MainWindow::onOvenToggle);
 
-    // ========== TCD 电源状态指示灯（不可点击，仅显示状态） ==========
+    // ========== TCD 电源状态指示灯 ==========
     m_tcdPowerAction = toolbar->addAction(m_iconTcdOff, "TCD电源：未连接");
-    m_tcdPowerAction->setToolTip("TCD电源状态");
+    m_tcdPowerAction->setToolTip("TCD电源状态（由 0x000A BIT1 判断）");
 
     updateTcdPowerIcon();
+    updateOvenIcon();
 
+    // ========== 连接信号槽 ==========
     connect(connectAct, &QAction::triggered, this, &MainWindow::openConnectionDialog);
     connect(dataAct, &QAction::triggered, this, &MainWindow::openDataProcessing);
     connect(globalSettingsAct, &QAction::triggered, this, &MainWindow::openSettings);
@@ -293,42 +324,42 @@ void MainWindow::createActions()
 void MainWindow::onOvenToggle()
 {
     if (!m_comm || !m_comm->isConnected()) {
-        QString msg = "未连接，无法控制柱温箱";
-        m_log->appendLog("柱温箱", msg);
-        m_log->appendFileOnly("柱温箱", msg);
+        QString msg = "未连接，无法控制 TC4";
+        m_log->appendLog("TC4", msg);
+        m_log->appendFileOnly("TC4", msg);
         return;
     }
 
     bool newState = !m_ovenEnabled;
     quint16 expected = newState ? 1 : 0;
 
-    // 发送写命令 0x0400
+    // 发送写 0x0400
     m_comm->setColumnOvenEnable(newState);
     m_ovenEnabled = newState;
     updateOvenIcon();
 
-    QString actionMsg = newState ? "发送开启柱温箱命令" : "发送关闭柱温箱命令";
-    m_log->appendLog("柱温箱", actionMsg);
-    m_log->appendFileOnly("柱温箱", actionMsg);
+    QString actionMsg = newState ? "发送开启 TC4 加热命令" : "发送关闭 TC4 加热命令";
+    m_log->appendLog("TC4", actionMsg);
+    m_log->appendFileOnly("TC4", actionMsg);
 
-    // 500ms 后读取 0x0400 验证
+    // 延迟 500ms 后读取 0x0400 验证
     QTimer::singleShot(500, this, [this, newState, expected]() {
         if (!m_comm || !m_comm->isConnected()) return;
 
         m_comm->requestRegisterRead(0x0400, [this, newState, expected](quint16 v) {
             if (v == expected) {
-                QString msg = QString("柱温箱%1验证成功: 0x0400 = %2")
+                QString msg = QString("TC4 %1 验证成功: 0x0400 = %2")
                                   .arg(newState ? "开启" : "关闭").arg(v);
-                m_log->appendLog("柱温箱", msg);
-                m_log->appendFileOnly("柱温箱", msg);
+                m_log->appendLog("TC4", msg);
+                m_log->appendFileOnly("TC4", msg);
             } else {
-                QString msg = QString("柱温箱%1验证失败: 期望 %2，实际 %3")
+                QString msg = QString("TC4 %1 验证失败: 期望 %2，实际 %3")
                                   .arg(newState ? "开启" : "关闭")
                                   .arg(expected).arg(v);
-                m_log->appendLog("柱温箱", msg);
-                m_log->appendFileOnly("柱温箱", msg);
+                m_log->appendLog("TC4", msg);
+                m_log->appendFileOnly("TC4", msg);
 
-                // 验证失败，恢复显示状态
+                // 回滚显示
                 m_ovenEnabled = !newState;
                 updateOvenIcon();
             }
@@ -339,13 +370,12 @@ void MainWindow::onOvenToggle()
 void MainWindow::updateOvenIcon()
 {
     if (!m_ovenAction) return;
-
     if (m_ovenEnabled) {
         m_ovenAction->setIcon(m_iconOvenOn);
-        m_ovenAction->setText("柱温箱：开");
+        m_ovenAction->setText("TC4：开");
     } else {
         m_ovenAction->setIcon(m_iconOvenOff);
-        m_ovenAction->setText("柱温箱：关");
+        m_ovenAction->setText("TC4：关");
     }
 }
 
@@ -365,6 +395,7 @@ void MainWindow::createTabs()
     m_monitorTab->setCommunication(m_comm);
     m_otherTab->setCommunication(m_comm);
 
+    // 显示长度传递
     connect(m_controlTab, &ControlTab::displayLengthChanged,
             this, [this](const QString &device, int length) {
                 if (!m_otherTab) return;
@@ -381,27 +412,55 @@ void MainWindow::createTabs()
                 }
             });
 
-    connect(m_controlTab, &ControlTab::commandRequested, this, [this](const QString &device, bool state) {
-        if (device.startsWith("NV")) {
-            m_log->appendLog("控制", QString("阀门 %1 状态:%2").arg(device).arg(state ? "开启" : "关闭"));
-        }
-    });
-    connect(m_controlTab, &ControlTab::logMessage, this, [this](const QString &type, const QString &event) {
-        m_log->appendLog(type, event);
-        m_log->appendFileOnly(type, event);
-    });
-    connect(m_controlTab, &ControlTab::sixWayValveToggled, this, [this]() {
-        if (m_monitorTab) m_monitorTab->startAutoSave();
-    });
+    // ==========================================================
+    // 控制页日志 + 电磁阀/六通阀 → 触发数据保存
+    //   - device 以 "NV" 开头：记录普通阀门日志
+    //   - device == "电磁阀"：与六通阀同步切换，用于启停数据保存
+    // ==========================================================
+    connect(m_controlTab, &ControlTab::commandRequested, this,
+            [this](const QString &device, bool state) {
+                if (device.startsWith("NV")) {
+                    QString msg = QString("阀门 %1 状态:%2")
+                                      .arg(device)
+                                      .arg(state ? "开启" : "关闭");
+                    m_log->appendLog("控制", msg);
+                    m_log->appendFileOnly("控制", msg);
+                }
+                else if (device == "电磁阀") {
+                    if (state) {
+                        // 切到采样位置 → 开始保存
+                        if (m_monitorTab) m_monitorTab->startDataSaveNow();
+                        m_log->appendLog("控制", "六通阀切换至采样位置，开始数据保存");
+                        m_log->appendFileOnly("控制", "六通阀切换至采样位置，开始数据保存");
+                    } else {
+                        // 切到装填位置 → 停止保存
+                        if (m_monitorTab) m_monitorTab->stopDataSave();
+                        m_log->appendLog("控制", "六通阀切换至装填位置，停止数据保存");
+                        m_log->appendFileOnly("控制", "六通阀切换至装填位置，停止数据保存");
+                    }
+                }
+            });
 
-    connect(m_monitorTab, &MonitorTab::logMessage, this, [this](const QString &type, const QString &event) {
-        m_log->appendLog(type, event);
-        m_log->appendFileOnly(type, event);
-    });
-    connect(m_otherTab, &OtherTab::logMessage, this, [this](const QString &type, const QString &event) {
-        m_log->appendLog(type, event);
-        m_log->appendFileOnly(type, event);
-    });
+    // 控制页通用日志（ControlTab 主动发的 logMessage）
+    connect(m_controlTab, &ControlTab::logMessage, this,
+            [this](const QString &type, const QString &event) {
+                m_log->appendLog(type, event);
+                m_log->appendFileOnly(type, event);
+            });
+
+    // 监视页日志
+    connect(m_monitorTab, &MonitorTab::logMessage, this,
+            [this](const QString &type, const QString &event) {
+                m_log->appendLog(type, event);
+                m_log->appendFileOnly(type, event);
+            });
+
+    // 其他页日志
+    connect(m_otherTab, &OtherTab::logMessage, this,
+            [this](const QString &type, const QString &event) {
+                m_log->appendLog(type, event);
+                m_log->appendFileOnly(type, event);
+            });
 }
 
 void MainWindow::onCommunicationConnected()
@@ -414,6 +473,10 @@ void MainWindow::onCommunicationConnected()
         m_connectAction->setIcon(m_iconConnectDefault);
     }
 
+    // 重置故障位缓存，让第一次读到的 0x000A 能触发一次日志
+    m_lastDiag = 0xFFFF;
+
+    // 立即检查一次 TCD 状态
     checkTcdPowerStatus();
 }
 
@@ -423,7 +486,6 @@ void MainWindow::onCommunicationDisconnected()
     m_log->appendLog("通信", "连接断开");
     m_log->appendFileOnly("通信", "连接断开");
 
-    // 连接断开时，将连接按钮图标设为黑色
     if (m_connectAction) {
         QPixmap blackIcon(32, 32);
         blackIcon.fill(Qt::transparent);
@@ -435,15 +497,15 @@ void MainWindow::onCommunicationDisconnected()
         m_connectAction->setIcon(QIcon(blackIcon));
     }
 
-    // 断开连接后，TCD 电源视为关闭
+    // TCD 状态视为未连接
     m_tcdPowered = false;
     m_comm->setTcdPowered(false);
     updateTcdPowerIcon();
+    if (m_monitorTab) m_monitorTab->setTcdPowered(false);
 
-    // 通知 MonitorTab 停止记录时间轴（避免断开后继续累积）
-    if (m_monitorTab) {
-        m_monitorTab->setTcdPowered(false);
-    }
+    // TC4 状态重置（未知）
+    m_ovenEnabled = false;
+    updateOvenIcon();
 }
 
 void MainWindow::openConnectionDialog()
@@ -454,9 +516,8 @@ void MainWindow::openConnectionDialog()
 
     QFormLayout form(&dlg);
 
-    // 从 QSettings 读取上次保存的 IP 和端口
     QSettings settings("MyCompany", "MicroGC");
-    QString savedIp = settings.value("connection/ip", "192.168.10.100").toString();
+    QString savedIp = settings.value("connection/ip", "192.168.10.8").toString();
     int savedPort = settings.value("connection/port", 502).toInt();
 
     QLineEdit *ipEdit = new QLineEdit(savedIp, &dlg);
@@ -473,7 +534,6 @@ void MainWindow::openConnectionDialog()
     connect(&buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
     if (dlg.exec() == QDialog::Accepted) {
-        // 保存本次连接设置到 QSettings
         settings.setValue("connection/ip", ipEdit->text());
         settings.setValue("connection/port", portSpin->value());
         settings.sync();
@@ -487,10 +547,7 @@ void MainWindow::openConnectionDialog()
 
 void MainWindow::onFaultBitsChanged(quint16 diag)
 {
-    struct BitInfo {
-        int bit;
-        const char *name;
-    };
+    struct BitInfo { int bit; const char *name; };
     static const BitInfo bits[] = {
                                     {0,  "TC4通信故障"},
                                     {1,  "TCD通信故障"},
@@ -499,15 +556,15 @@ void MainWindow::onFaultBitsChanged(quint16 diag)
                                     {4,  "TCD A超量程"},
                                     {5,  "TCD B超量程"},
                                     {6,  "TCD A-B超量程"},
-                                    {7,  "流量输入过量程"},
-                                    {8,  "压力输入过量程"},
+                                    {7,  "流量1输入超量程"},
+                                    {8,  "压力输入超量程"},
                                     {9,  "上位机通信超时"},
                                     {10, "TPC6200采集故障"},
                                     {11, "网络参数无有效记录"},
                                     {12, "网络参数保存失败"},
+                                    {13, "流量2输入超量程"},
                                     };
 
-    // 收集当前置位的故障
     QStringList faultList;
     for (const BitInfo &b : bits) {
         if (diag & (1 << b.bit)) {
@@ -666,16 +723,10 @@ void MainWindow::openSettings()
     // ================= 内部“设置”按钮 =================
     connect(setCollectBtn, &QPushButton::clicked, this, [this, collectPointsSpin]() {
         if (m_monitorTab) m_monitorTab->setCollectPoints(collectPointsSpin->value());
-        QSettings s("MyCompany", "MicroGC");
-        s.setValue("global/collectPoints", collectPointsSpin->value());
-        s.sync();
         m_log->appendLog("设置", QString("采集点数设置为 %1").arg(collectPointsSpin->value()));
     });
     connect(setAverageBtn, &QPushButton::clicked, this, [this, averageSpin]() {
         if (m_monitorTab) m_monitorTab->setAveragePoints(averageSpin->value());
-        QSettings s("MyCompany", "MicroGC");
-        s.setValue("global/averagePoints", averageSpin->value());
-        s.sync();
         m_log->appendLog("设置", QString("均点设置设置为 %1").arg(averageSpin->value()));
     });
 
@@ -738,143 +789,53 @@ void MainWindow::openSettings()
     dlg.exec();
 }
 
+#include "autoprocessdialog.h"
+
 void MainWindow::openAutoProcessSettings()
 {
-    QDialog dlg(this);
-    dlg.setWindowTitle("自动流程设置");
-    dlg.setMinimumWidth(450);
-
-    QFormLayout form(&dlg);
-
-    QSettings settings("MyCompany", "MicroGC");
-    int columnOvenTemp = settings.value("auto/columnOvenTemp", 60).toInt();
-    int tcdTemp = settings.value("auto/tcdTemp", 120).toInt();
-    int carrierFlow1 = settings.value("auto/carrierFlow1Voltage", 5).toInt();
-    int carrierFlow2 = settings.value("auto/carrierFlow2Voltage", 5).toInt();
-    double tempTolerance = settings.value("auto/tempTolerance", 0.5).toDouble();
-    double startRecordMin = settings.value("auto/startRecordMin", 0.01).toDouble();
-    double valveOpenMin = settings.value("auto/valveOpenMin", 0.1).toDouble();
-    double valveCloseMin = settings.value("auto/valveCloseMin", 0.8).toDouble();
-    double stopRecordMin = settings.value("auto/stopRecordMin", 2.0).toDouble();
-    double coolDownTemp = settings.value("auto/coolDownTemp", 50.0).toDouble();
-
-    QSpinBox *ovenSpin = new QSpinBox(&dlg);
-    ovenSpin->setRange(1, 1000);
-    ovenSpin->setValue(columnOvenTemp);
-    ovenSpin->setSuffix(" ℃");
-
-    QSpinBox *tcdSpin = new QSpinBox(&dlg);
-    tcdSpin->setRange(0, 500);
-    tcdSpin->setValue(tcdTemp);
-    tcdSpin->setSuffix(" ℃");
-
-    QSpinBox *flow1Spin = new QSpinBox(&dlg);
-    flow1Spin->setRange(1, 1000);
-    flow1Spin->setValue(carrierFlow1);
-    flow1Spin->setSuffix(" 电压");
-
-    QSpinBox *flow2Spin = new QSpinBox(&dlg);
-    flow2Spin->setRange(1, 1000);
-    flow2Spin->setValue(carrierFlow2);
-    flow2Spin->setSuffix(" 电压");
-
-    QDoubleSpinBox *toleranceSpin = new QDoubleSpinBox(&dlg);
-    toleranceSpin->setRange(0.1, 5.0);
-    toleranceSpin->setDecimals(1);
-    toleranceSpin->setValue(tempTolerance);
-    toleranceSpin->setSuffix(" ℃");
-
-    QDoubleSpinBox *startRecSpin = new QDoubleSpinBox(&dlg);
-    startRecSpin->setRange(0.0, 10.0);
-    startRecSpin->setDecimals(2);
-    startRecSpin->setValue(startRecordMin);
-    startRecSpin->setSuffix(" min");
-
-    QDoubleSpinBox *valveOpenSpin = new QDoubleSpinBox(&dlg);
-    valveOpenSpin->setRange(0.0, 10.0);
-    valveOpenSpin->setDecimals(2);
-    valveOpenSpin->setValue(valveOpenMin);
-    valveOpenSpin->setSuffix(" min");
-
-    QDoubleSpinBox *valveCloseSpin = new QDoubleSpinBox(&dlg);
-    valveCloseSpin->setRange(0.0, 10.0);
-    valveCloseSpin->setDecimals(2);
-    valveCloseSpin->setValue(valveCloseMin);
-    valveCloseSpin->setSuffix(" min");
-
-    QDoubleSpinBox *stopRecSpin = new QDoubleSpinBox(&dlg);
-    stopRecSpin->setRange(0.0, 60.0);
-    stopRecSpin->setDecimals(2);
-    stopRecSpin->setValue(stopRecordMin);
-    stopRecSpin->setSuffix(" min");
-
-    QDoubleSpinBox *coolSpin = new QDoubleSpinBox(&dlg);
-    coolSpin->setRange(0.0, 100.0);
-    coolSpin->setDecimals(1);
-    coolSpin->setValue(coolDownTemp);
-    coolSpin->setSuffix(" ℃");
-
-    form.addRow("柱温箱目标温度:", ovenSpin);
-    form.addRow("TCD目标温度:", tcdSpin);
-    form.addRow("流量器A电压:", flow1Spin);
-    form.addRow("流量器B电压:", flow2Spin);
-    form.addRow("温度稳定容差:", toleranceSpin);
-    form.addRow("开始记录时间:", startRecSpin);
-    form.addRow("六通阀开启时间:", valveOpenSpin);
-    form.addRow("六通阀关闭时间:", valveCloseSpin);
-    form.addRow("停止记录时间:", stopRecSpin);
-    form.addRow("冷却安全温度:", coolSpin);
-
-    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    form.addRow(&buttons);
-    connect(&buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(&buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-
-    if (dlg.exec() == QDialog::Accepted) {
-        settings.setValue("auto/columnOvenTemp", ovenSpin->value());
-        settings.setValue("auto/tcdTemp", tcdSpin->value());
-        settings.setValue("auto/carrierFlow1Voltage", flow1Spin->value());
-        settings.setValue("auto/carrierFlow2Voltage", flow2Spin->value());
-        settings.setValue("auto/tempTolerance", toleranceSpin->value());
-        settings.setValue("auto/startRecordMin", startRecSpin->value());
-        settings.setValue("auto/valveOpenMin", valveOpenSpin->value());
-        settings.setValue("auto/valveCloseMin", valveCloseSpin->value());
-        settings.setValue("auto/stopRecordMin", stopRecSpin->value());
-        settings.setValue("auto/coolDownTemp", coolSpin->value());
-
-        AutoProcessSettings aps;
-        aps.columnOvenTemp = ovenSpin->value();
-        aps.tcdTemp = tcdSpin->value();
-        aps.carrierFlow1Voltage = flow1Spin->value();
-        aps.carrierFlow2Voltage = flow2Spin->value();
-        aps.tempTolerance = toleranceSpin->value();
-        aps.startRecordMin = startRecSpin->value();
-        aps.valveOpenMin = valveOpenSpin->value();
-        aps.valveCloseMin = valveCloseSpin->value();
-        aps.stopRecordMin = stopRecSpin->value();
-        aps.coolDownTemp = coolSpin->value();
-        m_autoProcess->setSettings(aps);
-
-        m_log->appendLog("自动流程", "设置已保存");
-        m_log->appendFileOnly("自动流程", "设置已保存");
-    }
+    AutoProcessDialog dlg(m_autoProcess, this);
+    dlg.exec();
 }
 
 void MainWindow::startStopAutoProcess()
 {
     if (!m_autoProcess) return;
-    if (m_autoProcess->currentStateName() == "空闲") {
-        m_autoProcess->start();
-    } else {
+    if (m_autoProcess->isRunning()) {
         m_autoProcess->stop();
+    } else {
+        m_autoProcess->start();
     }
 }
 
 void MainWindow::resetSystem()
 {
-    if (m_autoProcess) {
-        m_autoProcess->reset();
+    // 复位：如果自动流程正在运行，先停止；再由 MonitorTab 发送关闭命令
+    if (m_autoProcess && m_autoProcess->isRunning()) {
+        m_autoProcess->stop();
     }
+
+    // 停止数据保存（如果正在记录）
+    if (m_monitorTab) {
+        m_monitorTab->stopDataSave();
+        m_monitorTab->stopPolarityReversal();
+    }
+
+    // 关闭所有硬件
+    if (m_comm && m_comm->isConnected()) {
+        m_comm->setColumnOvenEnable(false);
+        m_comm->setValveBit(0, false);
+        m_comm->setSixWayValve1(false);
+        m_comm->setFlow1Voltage(0);
+        m_comm->setFlow2Voltage(0);
+
+        QString msg = "系统复位：已发送关闭命令（TC4/电磁阀/六通阀/流量电压）";
+        m_log->appendLog("复位", msg);
+        m_log->appendFileOnly("复位", msg);
+    }
+
+    // TC4 状态重置
+    m_ovenEnabled = false;
+    updateOvenIcon();
 }
 
 void MainWindow::toggleLogVisible(bool visible)
@@ -892,27 +853,29 @@ void MainWindow::checkTcdPowerStatus()
         return;
     }
 
-    // 读缓存的故障诊断寄存器（慢速轮询每秒更新一次）
+    // 读缓存的 0x000A（慢速轮询每秒更新）
     quint16 diag = m_comm->diagRegister();
-    bool tc4Fail = (diag & (1 << 0)) != 0;   // BIT0: TC4通信故障
-    bool tcdFail = (diag & (1 << 1)) != 0;   // BIT1: TCD通信故障
+
+    bool tc4Fail = (diag & (1 << 0)) != 0;   // BIT0
+    bool tcdFail = (diag & (1 << 1)) != 0;   // BIT1
     bool powered = !(tc4Fail || tcdFail);
 
-    m_tcdPowered = powered;
-    m_comm->setTcdPowered(powered);
-    updateTcdPowerIcon();
-    if (m_monitorTab) m_monitorTab->setTcdPowered(powered);
+    if (m_tcdPowered != powered) {
+        m_tcdPowered = powered;
+        m_comm->setTcdPowered(powered);
+        updateTcdPowerIcon();
+        if (m_monitorTab) m_monitorTab->setTcdPowered(powered);
+    }
 }
 
 void MainWindow::updateTcdPowerIcon()
 {
-    if (m_tcdPowerAction) {
-        if (m_tcdPowered) {
-            m_tcdPowerAction->setIcon(m_iconTcdOn);
-            m_tcdPowerAction->setText("TCD电源：已通电");
-        } else {
-            m_tcdPowerAction->setIcon(m_iconTcdOff);
-            m_tcdPowerAction->setText("TCD电源：未连接");
-        }
+    if (!m_tcdPowerAction) return;
+    if (m_tcdPowered) {
+        m_tcdPowerAction->setIcon(m_iconTcdOn);
+        m_tcdPowerAction->setText("TCD电源：已通电");
+    } else {
+        m_tcdPowerAction->setIcon(m_iconTcdOff);
+        m_tcdPowerAction->setText("TCD电源：未连接");
     }
 }

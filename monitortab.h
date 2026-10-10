@@ -10,17 +10,18 @@
 #include <QPushButton>
 #include <QButtonGroup>
 #include <QComboBox>
-#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QList>
+#include <QPair>
 
 class QVBoxLayout;
 class QLineEdit;
-class QSpinBox;
 class QLabel;
 class InteractivePlot;
 class Communication;
 
 //==========================================================
-// SignalPlotPanel - 单个信号显示面板
+// SignalPlotPanel
 //==========================================================
 class SignalPlotPanel : public QGroupBox
 {
@@ -77,17 +78,23 @@ public:
     int getParameter(const QString &key) const;
     void setParameter(const QString &key, int value);
 
+    void setTcdPowered(bool powered);
+
 public slots:
-    void startAutoSave();
-    void startDataSave(const QString &fileName, int durationMinutes);
+    // 由自动流程触发的数据采集（从当前时刻开始，不写历史缓冲）
+    void startDataSaveNow();
     void stopDataSave();
+
+    // 由自动流程触发的极性反转
+    void startPolarityReversal();
+    void stopPolarityReversal();
+
     void onDataUpdated();
 
     void setChannelAVisible(bool visible);
     void setChannelBVisible(bool visible);
     void setChannelABVisible(bool visible);
     void applyGlobalParameters();
-    void setTcdPowered(bool powered);   // ← 新增这一行
 
 signals:
     void logMessage(const QString &type, const QString &event);
@@ -115,12 +122,12 @@ private slots:
 private:
     void setupControlPanel(QVBoxLayout *layout);
     void setupSignalPanel(QVBoxLayout *layout);
-    void checkTcdPoweredBeforeSetPower(bool isPowerA, quint16 value);
 
     // 数据缓存
     QVector<double> m_time;
-    QVector<double> m_rawA, m_rawB, m_rawAB;
-    QVector<double> m_filtA, m_filtB, m_filtAB;
+    QVector<double> m_rawA, m_rawB, m_rawAB;     // 原始值
+    QVector<double> m_filtA, m_filtB, m_filtAB;  // 滤波值
+    QVector<double> m_dispA, m_dispB, m_dispAB;  // 显示值（已应用极性反转）
     int m_collectPoints;
     int m_averagePoints;
 
@@ -138,13 +145,12 @@ private:
     Communication *m_comm;
 
     // UI 控件
-    QLabel *m_tempValueLabel;
     QSpinBox *m_tempEdit;
     QSpinBox *m_powerAEdit;
     QSpinBox *m_powerBEdit;
-    QDoubleSpinBox  *m_levelAEdit;
-    QDoubleSpinBox  *m_levelBEdit;
-    QDoubleSpinBox  *m_levelABEdit;
+    QSpinBox *m_levelAEdit;
+    QSpinBox *m_levelBEdit;
+    QSpinBox *m_levelABEdit;
     QSpinBox *m_zsEdit;
     QComboBox *m_precisionEdit;
     QPushButton *m_rfBtn;
@@ -176,14 +182,15 @@ private:
     // 绘图刷新
     QTimer *m_plotTimer;
 
-    // TCD 通电检查（灯丝功率设置前）
+    // TCD 电源状态与时间轴累积
+    bool m_tcdPowered = false;
+    qint64 m_tcdActiveMs = 0;
+    qint64 m_tcdLastTick = 0;
 
-    bool m_powerCheckInProgress = false;
-    bool m_powerCheckIsA = false;
-
-    bool m_tcdPowered = false;        // TCD 电源当前状态
-    qint64 m_tcdActiveMs = 0;         // 累积的有效采样时间（毫秒）
-    qint64 m_tcdLastTick = 0;         // 当前活动段的起点 tick
+    // 极性反转
+    bool m_polarityActive = false;   // 当前是否正在反转
+    // 显示值用 m_dispA/B/AB 记录，反转折点之后新数据取负；
+    // 已经记录的点不变，符合"反转之前的不能也反转"
 };
 
 #endif // MONITORTAB_H

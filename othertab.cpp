@@ -17,6 +17,7 @@
 #include <QWheelEvent>
 #include <QDateTime>
 #include <QDebug>
+#include <QScrollArea>
 
 OtherTab::OtherTab(QWidget *parent)
     : QWidget(parent)
@@ -46,9 +47,23 @@ OtherTab::OtherTab(QWidget *parent)
     , m_bottomRowLayout(nullptr)
     , m_plotLayout(nullptr)
 {
-    auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->addLayout(setupFirstRow());
-    mainLayout->addLayout(setupPlotLayout(), 1);
+    auto *outerLayout = new QVBoxLayout(this);
+    outerLayout->setContentsMargins(0, 0, 0, 0);
+
+    // 顶部控件行 + 图表区域，用 QScrollArea 包裹
+    auto *content = new QWidget();
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(4, 4, 4, 4);
+    contentLayout->addLayout(setupFirstRow());
+    contentLayout->addLayout(setupPlotLayout(), 1);
+
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidget(content);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setFrameShape(QFrame::NoFrame);
+    outerLayout->addWidget(scroll);
 
     m_chkColumnOven->setChecked(true);
     m_chkPressure->setChecked(true);
@@ -83,11 +98,11 @@ QHBoxLayout* OtherTab::setupFirstRow()
 {
     auto *layout = new QHBoxLayout;
 
-    m_chkColumnOven = new QCheckBox("柱温箱", this);
-    m_chkPressure = new QCheckBox("压力传感器", this);
-    m_chkTcdTemp = new QCheckBox("TCD", this);
-    m_chkFlow1 = new QCheckBox("流量器1", this);
-    m_chkFlow2 = new QCheckBox("流量器2", this);
+    m_chkColumnOven = new QCheckBox("TC4温度", this);
+    m_chkPressure   = new QCheckBox("压力传感器", this);
+    m_chkTcdTemp    = new QCheckBox("TCD", this);
+    m_chkFlow1      = new QCheckBox("流量器1", this);
+    m_chkFlow2      = new QCheckBox("流量器2", this);
 
     layout->addWidget(m_chkColumnOven);
     layout->addWidget(m_chkPressure);
@@ -146,57 +161,62 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     m_topRowLayout = new QHBoxLayout;
     m_topRowLayout->setSpacing(6);
 
-    // 柱温箱
-    m_groupColumnOven = new QGroupBox("柱温箱", this);
+    // TC4 温度
+    m_groupColumnOven = new QGroupBox("TC4温度", this);
     m_groupColumnOven->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto *coLayout = new QVBoxLayout(m_groupColumnOven);
-    m_plotColumnOven = new InteractivePlot(m_groupColumnOven);
-    m_plotColumnOven->addGraph();
-    m_plotColumnOven->graph(0)->setPen(QPen(Qt::blue));
-    m_plotColumnOven->xAxis->setLabel("Time(s)");
-    m_plotColumnOven->yAxis->setLabel("Temperature(°C)");
-    m_plotColumnOven->setCrosshairName("柱温箱");
-    coLayout->addWidget(m_plotColumnOven);
+    {
+        auto *l = new QVBoxLayout(m_groupColumnOven);
+        m_plotColumnOven = new InteractivePlot(m_groupColumnOven);
+        m_plotColumnOven->addGraph();
+        m_plotColumnOven->graph(0)->setPen(QPen(Qt::blue));
+        m_plotColumnOven->xAxis->setLabel("Time(s)");
+        m_plotColumnOven->yAxis->setLabel("Temperature(°C)");
+        m_plotColumnOven->setCrosshairName("TC4");
+        l->addWidget(m_plotColumnOven);
+    }
     m_topRowLayout->addWidget(m_groupColumnOven, 1);
 
     // 压力
     m_groupPressure = new QGroupBox("压力传感器", this);
     m_groupPressure->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto *pLayout = new QVBoxLayout(m_groupPressure);
-    m_plotPressure = new InteractivePlot(m_groupPressure);
-    m_plotPressure->addGraph();
-    m_plotPressure->graph(0)->setPen(QPen(Qt::darkGreen));
-    m_plotPressure->xAxis->setLabel("Time(s)");
-    m_plotPressure->yAxis->setLabel("Pressure(kPa)");
-    m_plotPressure->setCrosshairName("压力传感器");
-    pLayout->addWidget(m_plotPressure);
+    {
+        auto *l = new QVBoxLayout(m_groupPressure);
+        m_plotPressure = new InteractivePlot(m_groupPressure);
+        m_plotPressure->addGraph();
+        m_plotPressure->graph(0)->setPen(QPen(Qt::darkGreen));
+        m_plotPressure->xAxis->setLabel("Time(s)");
+        m_plotPressure->yAxis->setLabel("Pressure(kPa)");
+        m_plotPressure->setCrosshairName("压力传感器");
+        l->addWidget(m_plotPressure);
+    }
     m_topRowLayout->addWidget(m_groupPressure, 1);
 
-    // TCD（三条曲线：FA功率、FB功率、测量温度LL）
+    // TCD：三条曲线
     m_groupTcdTemp = new QGroupBox("TCD", this);
     m_groupTcdTemp->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto *tcdLayout = new QVBoxLayout(m_groupTcdTemp);
-    m_plotTcdTemp = new InteractivePlot(m_groupTcdTemp);
+    {
+        auto *l = new QVBoxLayout(m_groupTcdTemp);
+        m_plotTcdTemp = new InteractivePlot(m_groupTcdTemp);
 
-    m_plotTcdTemp->addGraph();
-    m_plotTcdTemp->graph(0)->setName("FA功率");
-    m_plotTcdTemp->graph(0)->setPen(QPen(Qt::red));
+        m_plotTcdTemp->addGraph();
+        m_plotTcdTemp->graph(0)->setName("FA功率(%)");
+        m_plotTcdTemp->graph(0)->setPen(QPen(Qt::red));
 
-    m_plotTcdTemp->addGraph();
-    m_plotTcdTemp->graph(1)->setName("FB功率");
-    m_plotTcdTemp->graph(1)->setPen(QPen(Qt::blue));
+        m_plotTcdTemp->addGraph();
+        m_plotTcdTemp->graph(1)->setName("FB功率(%)");
+        m_plotTcdTemp->graph(1)->setPen(QPen(Qt::blue));
 
-    m_plotTcdTemp->addGraph();
-    m_plotTcdTemp->graph(2)->setName("测量温度LL");
-    m_plotTcdTemp->graph(2)->setPen(QPen(Qt::darkYellow));
+        m_plotTcdTemp->addGraph();
+        m_plotTcdTemp->graph(2)->setName("实测温度(°C)");
+        m_plotTcdTemp->graph(2)->setPen(QPen(Qt::darkYellow));
 
-    m_plotTcdTemp->xAxis->setLabel("Time(s)");
-    m_plotTcdTemp->yAxis->setLabel("Value");
-    m_plotTcdTemp->setCrosshairName("TCD");
-    // 图例右上角
-    m_plotTcdTemp->legend->setVisible(true);
-    m_plotTcdTemp->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
-    tcdLayout->addWidget(m_plotTcdTemp);
+        m_plotTcdTemp->xAxis->setLabel("Time(s)");
+        m_plotTcdTemp->yAxis->setLabel("Value");
+        m_plotTcdTemp->setCrosshairName("TCD");
+        m_plotTcdTemp->legend->setVisible(true);
+        m_plotTcdTemp->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignRight);
+        l->addWidget(m_plotTcdTemp);
+    }
     m_topRowLayout->addWidget(m_groupTcdTemp, 1);
 
     // 第二行
@@ -206,27 +226,31 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     // 流量器1
     m_groupFlow1 = new QGroupBox("流量器1", this);
     m_groupFlow1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto *f1Layout = new QVBoxLayout(m_groupFlow1);
-    m_plotFlow1 = new InteractivePlot(m_groupFlow1);
-    m_plotFlow1->addGraph();
-    m_plotFlow1->graph(0)->setPen(QPen(Qt::magenta));
-    m_plotFlow1->xAxis->setLabel("Time(s)");
-    m_plotFlow1->yAxis->setLabel("Flow");
-    m_plotFlow1->setCrosshairName("流量器1");
-    f1Layout->addWidget(m_plotFlow1);
+    {
+        auto *l = new QVBoxLayout(m_groupFlow1);
+        m_plotFlow1 = new InteractivePlot(m_groupFlow1);
+        m_plotFlow1->addGraph();
+        m_plotFlow1->graph(0)->setPen(QPen(Qt::magenta));
+        m_plotFlow1->xAxis->setLabel("Time(s)");
+        m_plotFlow1->yAxis->setLabel("Flow");
+        m_plotFlow1->setCrosshairName("流量器1");
+        l->addWidget(m_plotFlow1);
+    }
     m_bottomRowLayout->addWidget(m_groupFlow1, 1);
 
     // 流量器2
     m_groupFlow2 = new QGroupBox("流量器2", this);
     m_groupFlow2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto *f2Layout = new QVBoxLayout(m_groupFlow2);
-    m_plotFlow2 = new InteractivePlot(m_groupFlow2);
-    m_plotFlow2->addGraph();
-    m_plotFlow2->graph(0)->setPen(QPen(Qt::cyan));
-    m_plotFlow2->xAxis->setLabel("Time(s)");
-    m_plotFlow2->yAxis->setLabel("Flow");
-    m_plotFlow2->setCrosshairName("流量器2");
-    f2Layout->addWidget(m_plotFlow2);
+    {
+        auto *l = new QVBoxLayout(m_groupFlow2);
+        m_plotFlow2 = new InteractivePlot(m_groupFlow2);
+        m_plotFlow2->addGraph();
+        m_plotFlow2->graph(0)->setPen(QPen(Qt::cyan));
+        m_plotFlow2->xAxis->setLabel("Time(s)");
+        m_plotFlow2->yAxis->setLabel("Flow");
+        m_plotFlow2->setCrosshairName("流量器2");
+        l->addWidget(m_plotFlow2);
+    }
     m_bottomRowLayout->addWidget(m_groupFlow2, 1);
 
     m_plotLayout->addLayout(m_topRowLayout, 1);
@@ -255,25 +279,27 @@ void OtherTab::updateFromComm()
         }
     };
 
-    // 柱温箱
+    // TC4 温度（原柱温箱）
     updatePlot(m_plotColumnOven, 0, m_comm->columnOven1Temp(), m_columnOvenLength);
-    // 压力
-    updatePlot(m_plotPressure, 0, m_comm->pressure(), m_pressureLength);
+
+    // 压力：原始 0.1 kPa/计数 → 除以 10 得到 kPa
+    updatePlot(m_plotPressure, 0, m_comm->pressure() / 10.0, m_pressureLength);
+
     // TCD 三条曲线
     updatePlot(m_plotTcdTemp, 0, m_comm->tcdPowerFA(), m_tcdTempLength);
     updatePlot(m_plotTcdTemp, 1, m_comm->tcdPowerFB(), m_tcdTempLength);
     updatePlot(m_plotTcdTemp, 2, m_comm->tcdMeasureTemp(), m_tcdTempLength);
+
     // 流量
     updatePlot(m_plotFlow1, 0, m_comm->flow1(), m_flow1Length);
     updatePlot(m_plotFlow2, 0, m_comm->flow2(), m_flow2Length);
 
-    // 自动调整 Y 轴
     if (m_autoScrollEnabled) {
         if (m_plotColumnOven->isVisible()) m_plotColumnOven->yAxis->rescale(true);
-        if (m_plotPressure->isVisible()) m_plotPressure->yAxis->rescale(true);
-        if (m_plotTcdTemp->isVisible()) m_plotTcdTemp->yAxis->rescale(true);
-        if (m_plotFlow1->isVisible()) m_plotFlow1->yAxis->rescale(true);
-        if (m_plotFlow2->isVisible()) m_plotFlow2->yAxis->rescale(true);
+        if (m_plotPressure->isVisible())   m_plotPressure->yAxis->rescale(true);
+        if (m_plotTcdTemp->isVisible())    m_plotTcdTemp->yAxis->rescale(true);
+        if (m_plotFlow1->isVisible())      m_plotFlow1->yAxis->rescale(true);
+        if (m_plotFlow2->isVisible())      m_plotFlow2->yAxis->rescale(true);
     }
 
     for (InteractivePlot *plot : {m_plotColumnOven, m_plotPressure, m_plotTcdTemp,
@@ -368,7 +394,6 @@ void OtherTab::toggleSensorVisible()
     }
 }
 
-// 长度接口
 void OtherTab::setColumnOvenLength(int points) { m_columnOvenLength = points; }
 void OtherTab::setPressureLength(int points) { m_pressureLength = points; }
 void OtherTab::setTcdTempLength(int points) { m_tcdTempLength = points; }

@@ -8,6 +8,7 @@ CONFIG += c++17
 
 SOURCES += \
     autoprocess.cpp \
+    autoprocessdialog.cpp \
     communication.cpp \
     controltab.cpp \
     dataprocessing.cpp \
@@ -22,6 +23,7 @@ SOURCES += \
 
 HEADERS += \
     autoprocess.h \
+    autoprocessdialog.h \
     communication.h \
     controltab.h \
     dataprocessing.h \

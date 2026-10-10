@@ -112,11 +112,11 @@ void RealtimeDetailDialog::updateFromComm()
 
     double value = 0;
     switch (m_dialogType) {
-    case 0: value = m_comm->flow1(); break;
+    case 0: value = m_comm->flow1(); break;             // 0~100
     case 1: value = m_comm->flow2(); break;
-    case 2: value = m_comm->pressure(); break;
-    case 3: value = m_comm->tcdMeasureTemp(); break;
-    case 4: value = m_comm->columnOven1Temp(); break;
+    case 2: value = m_comm->pressure() / 10.0; break;   // 0.1kPa → kPa
+    case 3: value = m_comm->tcdMeasureTemp(); break;    // °C
+    case 4: value = m_comm->tc4Temp(); break;           // TC4 当前温度 °C
     default: return;
     }
 
@@ -162,21 +162,23 @@ void RealtimeDetailDialog::addInfoRow(const QString &label, QWidget *widget)
 }
 
 //==========================================================
-// FlowControllerDialog（输入电压值，显示流量值）
+// FlowControllerDialog（设置电压，显示流量值）
 //==========================================================
 FlowControllerDialog::FlowControllerDialog(const QString &title, QWidget *parent)
     : RealtimeDetailDialog(title, parent)
 {
     m_dialogType = (title == "流量控制器1") ? 0 : 1;
 
-    auto *currentLabel = new QLabel("-- min/L", this);
+    auto *currentLabel = new QLabel("-- ", this);
     currentLabel->setStyleSheet("font-weight: bold; color: blue;");
     addInfoRow("当前流量值:", currentLabel);
     m_currentLabel = currentLabel;
 
     auto *setpointSpin = new QSpinBox(this);
-    setpointSpin->setRange(1, 5000);          // 协议范围 1~5000
+    setpointSpin->setRange(0, 5000);        // 0~5000 mV
+    setpointSpin->setSuffix(" mV");
     m_setFlowBtn = new QPushButton("设置", this);
+    m_setFlowBtn->setToolTip("DAC 输出 0~5000 mV；上电及上位机5秒超时降为0 mV");
     QWidget *rowWidget = new QWidget(this);
     QHBoxLayout *rowLayout = new QHBoxLayout(rowWidget);
     rowLayout->setContentsMargins(0,0,0,0);
@@ -199,7 +201,7 @@ FlowControllerDialog::FlowControllerDialog(const QString &title, QWidget *parent
 void FlowControllerDialog::updateValueLabel(double value)
 {
     if (m_currentLabel)
-        m_currentLabel->setText(QString("%1 min/L").arg(value, 0, 'f', 3));
+        m_currentLabel->setText(QString("%1").arg(value, 0, 'f', 1));
 }
 
 //==========================================================
@@ -210,7 +212,7 @@ PressureSensorDialog::PressureSensorDialog(const QString &title, QWidget *parent
 {
     m_dialogType = 2;
 
-    auto *currentLabel = new QLabel("-- KP", this);
+    auto *currentLabel = new QLabel("-- kPa", this);
     currentLabel->setStyleSheet("font-weight: bold; color: blue;");
     addInfoRow("当前压力:", currentLabel);
     m_currentLabel = currentLabel;
@@ -218,14 +220,14 @@ PressureSensorDialog::PressureSensorDialog(const QString &title, QWidget *parent
     auto *zeroBtn = new QPushButton("归零", this);
     addInfoRow("", zeroBtn);
     connect(zeroBtn, &QPushButton::clicked, this, [this]() {
-        if (m_currentLabel) m_currentLabel->setText("0.000 KP");
+        if (m_currentLabel) m_currentLabel->setText("0.0 kPa");
     });
 }
 
 void PressureSensorDialog::updateValueLabel(double value)
 {
     if (m_currentLabel)
-        m_currentLabel->setText(QString("%1 KP").arg(value, 0, 'f', 2));
+        m_currentLabel->setText(QString("%1 kPa").arg(value, 0, 'f', 1));
 }
 
 //==========================================================
@@ -238,7 +240,7 @@ TCDDialog::TCDDialog(const QString &title, QWidget *parent)
 
     auto *currentLabel = new QLabel("-- ℃", this);
     currentLabel->setStyleSheet("font-weight: bold; color: blue;");
-    addInfoRow("测量温度LL:", currentLabel);
+    addInfoRow("实测温度:", currentLabel);
     m_currentLabel = currentLabel;
 
     auto *setTempSpin = new QSpinBox(this);
@@ -246,7 +248,7 @@ TCDDialog::TCDDialog(const QString &title, QWidget *parent)
     setTempSpin->setSuffix(" ℃");
 
     QPushButton *setBtn = new QPushButton("设置", this);
-    setBtn->setToolTip("TS 98\r  设置TCD温度");
+    setBtn->setToolTip("TS 98.00\\r  设置TCD温度（发送值 = 输入 ×100）");
     QWidget *rowWidget = new QWidget(this);
     QHBoxLayout *rowLayout = new QHBoxLayout(rowWidget);
     rowLayout->setContentsMargins(0,0,0,0);
@@ -255,8 +257,11 @@ TCDDialog::TCDDialog(const QString &title, QWidget *parent)
     addInfoRow("设定温度:", rowWidget);
 
     connect(setBtn, &QPushButton::clicked, this, [this, setTempSpin]() {
-        if (m_comm)
-            m_comm->setTcdTemperature(static_cast<quint16>(setTempSpin->value()));
+        if (m_comm) {
+            int val = setTempSpin->value();
+            quint16 raw = static_cast<quint16>(val * 100);
+            m_comm->setTcdTemperature(raw);
+        }
     });
 }
 
@@ -267,7 +272,7 @@ void TCDDialog::updateValueLabel(double value)
 }
 
 //==========================================================
-// ColumnOvenDialog（设置柱温箱温度）
+// ColumnOvenDialog（TC4 温度设置）
 //==========================================================
 ColumnOvenDialog::ColumnOvenDialog(const QString &title, QWidget *parent)
     : RealtimeDetailDialog(title, parent)
@@ -295,6 +300,7 @@ ColumnOvenDialog::ColumnOvenDialog(const QString &title, QWidget *parent)
         int val = setTempSpin->value();
         if (!m_comm) return;
 
+        // 先读取 0x0400（TC4加热开关），未开则先开启
         m_comm->requestRegisterRead(0x0400, [this, val](quint16 ovenStatus) {
             if (ovenStatus == 1) {
                 m_comm->setColumnOven1Temperature(static_cast<quint16>(val));
@@ -313,7 +319,7 @@ ColumnOvenDialog::ColumnOvenDialog(const QString &title, QWidget *parent)
 void ColumnOvenDialog::updateValueLabel(double value)
 {
     if (m_currentLabel)
-        m_currentLabel->setText(QString("%1 ℃").arg(value, 0, 'f', 2));
+        m_currentLabel->setText(QString("%1 ℃").arg(value, 0, 'f', 1));
 }
 
 //==========================================================
@@ -342,7 +348,8 @@ ControlTab::ControlTab(QWidget *parent)
 
     buildGasScene(m_scene, m_comm, this);
 
-    m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    // 拉伸填满，允许变形（充分利用横向宽度）
+    m_view->fitInView(m_scene->sceneRect(), Qt::IgnoreAspectRatio);
 }
 
 void ControlTab::setCommunication(Communication *comm)
@@ -361,6 +368,14 @@ void ControlTab::handleValveClicked(ValveItem *valve)
     if (valve->name() != "电磁阀")
         return;
 
+    // ==========================================================
+    // 自动流程运行中：拒绝手动操作
+    // ==========================================================
+    if (m_autoProcessRunning) {
+        emit logMessage("控制", "自动流程运行中，禁止手动切换电磁阀/六通阀");
+        return;
+    }
+
     bool newState = !valve->state();
     valve->setState(newState);
 
@@ -372,42 +387,25 @@ void ControlTab::handleValveClicked(ValveItem *valve)
     }
 
     if (m_comm) {
-        // 写命令
         m_comm->setValveBit(0, newState);
         m_comm->setSixWayValve1(newState);
-
-        // 稍等片刻后读取验证（避免与写命令抢队列）
-        quint16 expectedValve = newState ? 1 : 0;
-        quint16 expectedSixWay = newState ? 1 : 0;
-
-        QTimer::singleShot(500, this, [this, expectedValve, expectedSixWay]() {
-            if (!m_comm) return;
-
-            // 验证 0x0401 电磁阀
-            m_comm->requestRegisterRead(0x0401, [this, expectedValve](quint16 v) {
-                if (v == expectedValve) {
-                    emit logMessage("控制", QString("电磁阀验证成功: 0x0401 = %1").arg(v));
-                } else {
-                    emit logMessage("控制", QString("电磁阀验证失败: 期望 %1，实际 %2")
-                                                .arg(expectedValve).arg(v));
-                }
-            });
-
-            // 验证 0x0404 六通阀
-            m_comm->requestRegisterRead(0x0404, [this, expectedSixWay](quint16 v) {
-                if (v == expectedSixWay) {
-                    emit logMessage("控制", QString("六通阀验证成功: 0x0404 = %1").arg(v));
-                } else {
-                    emit logMessage("控制", QString("六通阀验证失败: 期望 %1，实际 %2")
-                                                .arg(expectedSixWay).arg(v));
-                }
-            });
-        });
     }
 
     emit commandRequested("电磁阀", newState);
     emit logMessage("控制", QString("电磁阀状态: %1，六通阀同步切换").arg(newState ? "开启" : "关闭"));
     emit sixWayValveToggled();
+}
+
+void ControlTab::setAutoProcessRunning(bool running)
+{
+    m_autoProcessRunning = running;
+
+    // 运行时把鼠标指针变成"禁用"，给用户视觉提示
+    if (m_view) {
+        m_view->viewport()->setCursor(running
+                                          ? Qt::ForbiddenCursor
+                                          : Qt::ArrowCursor);
+    }
 }
 
 void ControlTab::handleSixWayClicked(SixWayValveItem *clickedValve)
@@ -442,7 +440,7 @@ void ControlTab::showRealtimeDialog(const QString &title)
         });
         dlg = tdlg;
     } else if (title == "柱温箱1" || title == "柱温箱2") {
-        auto *odlg = new ColumnOvenDialog("柱温箱", this);
+        auto *odlg = new ColumnOvenDialog("TC4", this);
         odlg->setCommunication(m_comm);
         connect(odlg, &RealtimeDetailDialog::lengthSet, this, [this](int len) {
             emit displayLengthChanged("Oven", len);
@@ -465,15 +463,15 @@ void ControlTab::updateRealtimeLabels()
         if (auto *text = qgraphicsitem_cast<QGraphicsTextItem*>(item)) {
             QString name = text->objectName();
             if (name == "ovenTempLabel") {
-                text->setPlainText(QString::number(m_comm->columnOven1Temp()) + " ℃");
+                text->setPlainText(QString::number(m_comm->tc4Temp()) + " ℃");
             } else if (name == "tcdTempLabel") {
-                text->setPlainText(QString::number(m_comm->tcdMeasureTemp()) + " ℃");
+                text->setPlainText(QString::number(m_comm->tcdMeasureTemp(), 'f', 2) + " ℃");
             } else if (name == "pressureValueLabel") {
-                text->setPlainText(QString::number(m_comm->pressure()) + " KP");
+                text->setPlainText(QString::number(m_comm->pressure() / 10.0, 'f', 1) + " kPa");
             } else if (name == "flow1ValueLabel") {
-                text->setPlainText(QString::number(m_comm->flow1()) + " min/L");
+                text->setPlainText(QString::number(m_comm->flow1()) + " ");
             } else if (name == "flow2ValueLabel") {
-                text->setPlainText(QString::number(m_comm->flow2()) + " min/L");
+                text->setPlainText(QString::number(m_comm->flow2()) + " ");
             }
         }
     }
@@ -494,5 +492,7 @@ void ControlTab::updateDeviceState(const QString &device, bool state)
 void ControlTab::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    if (m_view && m_scene) m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    if (m_view && m_scene) {
+        m_view->fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    }
 }

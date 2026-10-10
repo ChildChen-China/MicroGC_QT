@@ -31,9 +31,11 @@ private slots:
     void onCommunicationDisconnected();
     void checkTcdPowerStatus();
     void updateTcdPowerIcon();
-    void onFaultBitsChanged(quint16 diag);
 
-        void onOvenToggle();
+    void onOvenToggle();                // TC4 加热开关
+    void updateOvenIcon();
+
+    void onFaultBitsChanged(quint16 diag);   // 0x000A 故障位变化
 
 private:
     void createActions();
@@ -51,24 +53,21 @@ private:
     QAction *m_connectAction = nullptr;
     QIcon m_iconConnectDefault;
 
-    // TCD 电源指示
+    // TCD 电源状态指示
     QAction *m_tcdPowerAction = nullptr;
     QTimer *m_tcdCheckTimer = nullptr;
     bool m_tcdPowered = false;
-    bool m_tcdReplyReceived = false;
-    bool m_checkActive = false;
     QIcon m_iconTcdOn;
     QIcon m_iconTcdOff;
 
-    int m_flow1Voltage = 5;
-    int m_flow2Voltage = 5;
-
+    // TC4 加热开关按钮
     QAction *m_ovenAction = nullptr;
     bool m_ovenEnabled = false;
     QIcon m_iconOvenOff;
     QIcon m_iconOvenOn;
 
-        void updateOvenIcon();
+    // 故障位缓存（用于去重）
+    quint16 m_lastDiag = 0xFFFF;
 };
 
 #endif // MAINWINDOW_H

@@ -37,7 +37,7 @@ protected:
     QPushButton *m_setLengthBtn;
 
     QTimer *m_updateTimer;
-    int m_dialogType;               // 0=流量1,1=流量2,2=压力,3=TCD,4=柱温箱
+    int m_dialogType;               // 0=流量1,1=流量2,2=压力,3=TCD,4=TC4
     Communication *m_comm;
     bool m_autoScrollEnabled;
 
@@ -61,7 +61,7 @@ public:
     explicit FlowControllerDialog(const QString &title, QWidget *parent = nullptr);
 
 signals:
-    void flowVoltageSet(double value);
+    void flowVoltageSet(int value);
 
 protected:
     void updateValueLabel(double value) override;
@@ -104,7 +104,7 @@ private:
 };
 
 //==========================================================
-// 柱温箱对话框
+// TC4（柱温箱）对话框
 //==========================================================
 class ColumnOvenDialog : public RealtimeDetailDialog
 {
@@ -113,7 +113,7 @@ public:
     explicit ColumnOvenDialog(const QString &title, QWidget *parent = nullptr);
 
 signals:
-    void tempSetpointSet(double value);
+    void tempSetpointSet(int value);
 
 protected:
     void updateValueLabel(double value) override;
@@ -147,6 +147,7 @@ public slots:
     void handleSixWayClicked(SixWayValveItem *valve);
     void updateRealtimeLabels();
 
+    void setAutoProcessRunning(bool running);
 protected:
     void resizeEvent(QResizeEvent *event) override;
 
@@ -154,6 +155,7 @@ private:
     QGraphicsView *m_view;
     QGraphicsScene *m_scene;
     Communication *m_comm;
+    bool m_autoProcessRunning = false;
 };
 
 #endif // CONTROLTAB_H
