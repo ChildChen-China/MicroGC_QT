@@ -248,7 +248,7 @@ TCDDialog::TCDDialog(const QString &title, QWidget *parent)
     setTempSpin->setSuffix(" ℃");
 
     QPushButton *setBtn = new QPushButton("设置", this);
-    setBtn->setToolTip("TS 98.00\\r  设置TCD温度（发送值 = 输入 ×100）");
+    setBtn->setToolTip("例如57.986 °C四舍五入写入5799；");
     QWidget *rowWidget = new QWidget(this);
     QHBoxLayout *rowLayout = new QHBoxLayout(rowWidget);
     rowLayout->setContentsMargins(0,0,0,0);
@@ -289,9 +289,13 @@ ColumnOvenDialog::ColumnOvenDialog(const QString &title, QWidget *parent)
     setTempSpin->setSuffix(" ℃");
 
     m_setTempBtn = new QPushButton("设置", this);
+    // ★ 新增 tooltip
+    m_setTempBtn->setToolTip("设置 TC4 目标温度（范围0~1000  1 °C/计数）；\n"
+                             "若 TC4 加热未开启，会自动先开启再写目标温度");
+
     QWidget *rowWidget = new QWidget(this);
     QHBoxLayout *rowLayout = new QHBoxLayout(rowWidget);
-    rowLayout->setContentsMargins(0,0,0,0);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
     rowLayout->addWidget(setTempSpin);
     rowLayout->addWidget(m_setTempBtn);
     addInfoRow("设定温度:", rowWidget);

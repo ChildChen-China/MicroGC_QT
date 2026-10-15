@@ -342,8 +342,8 @@ void MainWindow::onOvenToggle()
     m_log->appendLog("TC4", actionMsg);
     m_log->appendFileOnly("TC4", actionMsg);
 
-    // 延迟 500ms 后读取 0x0400 验证
-    QTimer::singleShot(500, this, [this, newState, expected]() {
+    // 延迟 1000ms 后读取 0x0400 验证
+    QTimer::singleShot(1000, this, [this, newState, expected]() {
         if (!m_comm || !m_comm->isConnected()) return;
 
         m_comm->requestRegisterRead(0x0400, [this, newState, expected](quint16 v) {

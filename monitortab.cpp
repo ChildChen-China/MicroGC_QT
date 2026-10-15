@@ -233,7 +233,7 @@ MonitorTab::MonitorTab(QWidget *parent)
     rightScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     rightScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     rightScroll->setFrameShape(QFrame::NoFrame);
-    mainLayout->addWidget(rightScroll, 3);
+    mainLayout->addWidget(rightScroll, 4);
 
     // 反馈定时器
     m_feedbackTimer->setInterval(2000);
@@ -467,7 +467,7 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
         m_tempEdit->setRange(0, 500);
         m_tempEdit->setSuffix(" ℃");
         QPushButton *btn = new QPushButton("设置", basicGroup);
-        btn->setToolTip("TS 98.00\\r  设置TCD温度（发送值 = 输入 ×100）");
+        btn->setToolTip("温度0-500\\r  例如57.986 °C四舍五入上传5799；保持最后一次有效值");
         row->addWidget(m_tempEdit);
         row->addWidget(btn);
         basicLayout->addLayout(row);
@@ -529,7 +529,7 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
         m_powerAEdit->setRange(0, 100);
         m_powerAEdit->setSuffix(" %");
         QPushButton *btn = new QPushButton("设置", powerGroup);
-        btn->setToolTip("FA 63\\r 设置灯丝A功率 (0~100)");
+        btn->setToolTip("FA xx\\r 设置灯丝A功率 (0~100)");
         row->addWidget(m_powerAEdit);
         row->addWidget(btn);
         powerLayout->addLayout(row);
@@ -542,7 +542,7 @@ void MonitorTab::setupControlPanel(QVBoxLayout *layout)
         m_powerBEdit->setRange(0, 100);
         m_powerBEdit->setSuffix(" %");
         QPushButton *btn = new QPushButton("设置", powerGroup);
-        btn->setToolTip("FB 63\\r  设置灯丝B功率 (0~100)");
+        btn->setToolTip("FB xx\\r  设置灯丝B功率 (0~100)");
         row->addWidget(m_powerBEdit);
         row->addWidget(btn);
         powerLayout->addLayout(row);
