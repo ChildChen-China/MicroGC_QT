@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QList>
 #include <QString>
+#include <functional>
 
 class Communication;
 
@@ -23,7 +24,7 @@ enum class AutoEventType {
 //==========================================================
 struct AutoEventGroup {
     AutoEventType type = AutoEventType::Collect;
-    double onTimeMin = 0.0;
+    double onTimeMin  = 0.0;
     double offTimeMin = 1.0;
 };
 
@@ -34,6 +35,7 @@ struct AutoEventGroup {
 //   2. 启动后从 t=0 开始计时
 //   3. 到达时间点依次触发事件
 //   4. 全部执行完自动停止，或用户手动停止后不再执行
+//   5. 支持多次循环测量，每次独立生成数据文件
 //==========================================================
 class AutoProcessManager : public QObject
 {
@@ -41,6 +43,10 @@ class AutoProcessManager : public QObject
 public:
     explicit AutoProcessManager(Communication *comm, QObject *parent = nullptr);
 
+    // TCD 时间提供者（由 MainWindow 连接 MonitorTab 的 currentTcdSeconds）
+    void setTcdTimeProvider(std::function<double()> provider);
+
+    // 事件组读写
     QList<AutoEventGroup> groups() const { return m_groups; }
     void setGroups(const QList<AutoEventGroup> &groups);
 
@@ -48,7 +54,7 @@ public:
     void saveToSettings() const;
     void loadFromSettings();
 
-    // JSON 文件导入导出
+    // JSON 文件导入导出（供自动流程设置对话框调用）
     bool exportToFile(const QString &fileName) const;
     bool importFromFile(const QString &fileName);
 
@@ -59,11 +65,14 @@ signals:
     void stateChanged(const QString &stateName);
     void logMessage(const QString &type, const QString &event);
     void deviceStateChanged(const QString &device, bool state);
-    // 数据采集控制
-    void startDataSaveTriggered();
+
+    // 数据采集控制（自动测量专用：带路径、文件名前缀、循环序号）
+    void startDataSaveTriggered(const QString &path,
+                                const QString &fileNamePrefix,
+                                int cycleIndex);
     void stopDataSaveTriggered();
 
-    // 极性反转控制（通知 MonitorTab 记录反转时间段）
+    // 极性反转控制
     void polarityOnTriggered();
     void polarityOffTriggered();
 
@@ -79,22 +88,34 @@ private slots:
 private:
     struct EventItem {
         AutoEventType type;
-        bool onAction;      // true=开, false=关
+        bool   onAction;    // true=开, false=关
         double timeMin;
     };
 
     void buildExecutionQueue();
     void executeEvent(const EventItem &e);
     void changeState();
+    void startSingleCycle();
 
-    Communication *m_comm;
+    // 核心对象
+    Communication *m_comm = nullptr;
+    QTimer        *m_tickTimer = nullptr;
+
+    // 事件组
     QList<AutoEventGroup> m_groups;
-    QList<EventItem> m_queue;
-    int m_currentIndex = 0;
-    bool m_running = false;
-
-    QTimer *m_tickTimer;
+    QList<EventItem>      m_queue;
+    int    m_currentIndex = 0;
+    bool   m_running = false;
     qint64 m_startMs = 0;
+
+    // 多次循环测量配置
+    int     m_totalCycles   = 1;
+    int     m_currentCycle  = 0;
+    QString m_autoSavePath;
+    QString m_autoFilePrefix;
+
+    // TCD 时间提供者
+    std::function<double()> m_tcdTimeProvider;
 };
 
 #endif // AUTOPROCESS_H

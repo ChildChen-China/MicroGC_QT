@@ -167,18 +167,18 @@ void RealtimeDetailDialog::addInfoRow(const QString &label, QWidget *widget)
 FlowControllerDialog::FlowControllerDialog(const QString &title, QWidget *parent)
     : RealtimeDetailDialog(title, parent)
 {
-    m_dialogType = (title == "流量控制器1") ? 0 : 1;
-
-    auto *currentLabel = new QLabel("-- ", this);
+    m_dialogType = (title == "载气") ? 0 : 1;
+    auto *currentLabel = new QLabel("-- psi", this);
     currentLabel->setStyleSheet("font-weight: bold; color: blue;");
-    addInfoRow("当前流量值:", currentLabel);
+    addInfoRow("当前psi:", currentLabel);
     m_currentLabel = currentLabel;
 
     auto *setpointSpin = new QSpinBox(this);
-    setpointSpin->setRange(0, 5000);        // 0~5000 mV
+    setpointSpin->setRange(0, 5000);
     setpointSpin->setSuffix(" mV");
     m_setFlowBtn = new QPushButton("设置", this);
     m_setFlowBtn->setToolTip("DAC 输出 0~5000 mV；上电及上位机5秒超时降为0 mV");
+
     QWidget *rowWidget = new QWidget(this);
     QHBoxLayout *rowLayout = new QHBoxLayout(rowWidget);
     rowLayout->setContentsMargins(0,0,0,0);
@@ -200,9 +200,13 @@ FlowControllerDialog::FlowControllerDialog(const QString &title, QWidget *parent
 
 void FlowControllerDialog::updateValueLabel(double value)
 {
-    if (m_currentLabel)
-        m_currentLabel->setText(QString("%1").arg(value, 0, 'f', 1));
+    if (m_currentLabel) {
+        double psi = value * 20.0 - 0.008;
+        if (psi < 0.0) psi = 0.0;   // ★ 避免未连接时显示 -0.008
+        m_currentLabel->setText(QString::number(psi, 'f', 3));
+    }
 }
+
 
 //==========================================================
 // PressureSensorDialog
@@ -420,12 +424,11 @@ void ControlTab::handleSixWayClicked(SixWayValveItem *clickedValve)
 void ControlTab::showRealtimeDialog(const QString &title)
 {
     RealtimeDetailDialog *dlg = nullptr;
-
-    if (title == "流量控制器1" || title == "流量控制器2") {
+    if (title == "载气" || title == "参比气") {
         auto *fdlg = new FlowControllerDialog(title, this);
         fdlg->setCommunication(m_comm);
         connect(fdlg, &RealtimeDetailDialog::lengthSet, this, [this, title](int len) {
-            if (title == "流量控制器1") emit displayLengthChanged("Flow1", len);
+            if (title == "载气") emit displayLengthChanged("Flow1", len);
             else emit displayLengthChanged("Flow2", len);
         });
         dlg = fdlg;
@@ -451,12 +454,12 @@ void ControlTab::showRealtimeDialog(const QString &title)
         });
         dlg = odlg;
     }
-
     if (dlg) {
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
     }
 }
+
 
 void ControlTab::updateRealtimeLabels()
 {
@@ -473,9 +476,13 @@ void ControlTab::updateRealtimeLabels()
             } else if (name == "pressureValueLabel") {
                 text->setPlainText(QString::number(m_comm->pressure() / 10.0, 'f', 1) + " kPa");
             } else if (name == "flow1ValueLabel") {
-                text->setPlainText(QString::number(m_comm->flow1()) + " ");
+                double psi = m_comm->flow1() * 20.0 - 0.008;
+                if (psi < 0.0) psi = 0.0;   // ★
+                text->setPlainText(QString::number(psi, 'f', 3) + " psi");
             } else if (name == "flow2ValueLabel") {
-                text->setPlainText(QString::number(m_comm->flow2()) + " ");
+                double psi = m_comm->flow2() * 20.0 - 0.008;
+                if (psi < 0.0) psi = 0.0;   // ★
+                text->setPlainText(QString::number(psi, 'f', 3) + " psi");
             }
         }
     }
@@ -486,9 +493,17 @@ void ControlTab::updateDeviceState(const QString &device, bool state)
     const auto items = m_scene->items();
     for (QGraphicsItem *item : items) {
         if (auto *valve = dynamic_cast<ValveItem*>(item)) {
-            if (valve->name() == device) valve->setState(state);
+            if (valve->name() == device) {
+                bool oldBlock = valve->blockSignals(true);   // ★ 关键
+                valve->setState(state);
+                valve->blockSignals(oldBlock);
+            }
         } else if (auto *sixValve = dynamic_cast<SixWayValveItem*>(item)) {
-            if (sixValve->name() == device) sixValve->setState(state);
+            if (sixValve->name() == device) {
+                bool oldBlock = sixValve->blockSignals(true); // ★ 关键
+                sixValve->setState(state);
+                sixValve->blockSignals(oldBlock);
+            }
         }
     }
 }

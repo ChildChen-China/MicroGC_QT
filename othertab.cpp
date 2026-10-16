@@ -101,8 +101,8 @@ QHBoxLayout* OtherTab::setupFirstRow()
     m_chkColumnOven = new QCheckBox("TC4温度", this);
     m_chkPressure   = new QCheckBox("压力传感器", this);
     m_chkTcdTemp    = new QCheckBox("TCD", this);
-    m_chkFlow1      = new QCheckBox("流量器1", this);
-    m_chkFlow2      = new QCheckBox("流量器2", this);
+    m_chkFlow1      = new QCheckBox("载气", this);
+    m_chkFlow2      = new QCheckBox("参比气", this);
 
     layout->addWidget(m_chkColumnOven);
     layout->addWidget(m_chkPressure);
@@ -223,8 +223,8 @@ QVBoxLayout* OtherTab::setupPlotLayout()
     m_bottomRowLayout = new QHBoxLayout;
     m_bottomRowLayout->setSpacing(6);
 
-    // 流量器1
-    m_groupFlow1 = new QGroupBox("流量器1", this);
+    // 载气图表（原流量器1）
+    m_groupFlow1 = new QGroupBox("载气", this);
     m_groupFlow1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     {
         auto *l = new QVBoxLayout(m_groupFlow1);
@@ -232,14 +232,14 @@ QVBoxLayout* OtherTab::setupPlotLayout()
         m_plotFlow1->addGraph();
         m_plotFlow1->graph(0)->setPen(QPen(Qt::magenta));
         m_plotFlow1->xAxis->setLabel("Time(s)");
-        m_plotFlow1->yAxis->setLabel("Flow");
-        m_plotFlow1->setCrosshairName("流量器1");
+        m_plotFlow1->yAxis->setLabel("psi");
+        m_plotFlow1->setCrosshairName("载气");
         l->addWidget(m_plotFlow1);
     }
-    m_bottomRowLayout->addWidget(m_groupFlow1, 1);
+    m_bottomRowLayout->addWidget(m_groupFlow1, 1);   // ← 从 top 改到 bottom
 
-    // 流量器2
-    m_groupFlow2 = new QGroupBox("流量器2", this);
+    // 参比气图表（原流量器2）
+    m_groupFlow2 = new QGroupBox("参比气", this);
     m_groupFlow2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     {
         auto *l = new QVBoxLayout(m_groupFlow2);
@@ -247,11 +247,12 @@ QVBoxLayout* OtherTab::setupPlotLayout()
         m_plotFlow2->addGraph();
         m_plotFlow2->graph(0)->setPen(QPen(Qt::cyan));
         m_plotFlow2->xAxis->setLabel("Time(s)");
-        m_plotFlow2->yAxis->setLabel("Flow");
-        m_plotFlow2->setCrosshairName("流量器2");
+        m_plotFlow2->yAxis->setLabel("psi");
+        m_plotFlow2->setCrosshairName("参比气");
         l->addWidget(m_plotFlow2);
     }
     m_bottomRowLayout->addWidget(m_groupFlow2, 1);
+
 
     m_plotLayout->addLayout(m_topRowLayout, 1);
     m_plotLayout->addLayout(m_bottomRowLayout, 1);
@@ -290,9 +291,14 @@ void OtherTab::updateFromComm()
     updatePlot(m_plotTcdTemp, 1, m_comm->tcdPowerFB(), m_tcdTempLength);
     updatePlot(m_plotTcdTemp, 2, m_comm->tcdMeasureTemp(), m_tcdTempLength);
 
-    // 流量
-    updatePlot(m_plotFlow1, 0, m_comm->flow1(), m_flow1Length);
-    updatePlot(m_plotFlow2, 0, m_comm->flow2(), m_flow2Length);
+    // 载气、参比气转换为 psi 后绘图
+    double flow1Psi = m_comm->flow1() * 20.0 - 0.008;
+    double flow2Psi = m_comm->flow2() * 20.0 - 0.008;
+    if (flow1Psi < 0.0) flow1Psi = 0.0;   // ★
+    if (flow2Psi < 0.0) flow2Psi = 0.0;   // ★
+    updatePlot(m_plotFlow1, 0, flow1Psi, m_flow1Length);
+    updatePlot(m_plotFlow2, 0, flow2Psi, m_flow2Length);
+
 
     if (m_autoScrollEnabled) {
         if (m_plotColumnOven->isVisible()) m_plotColumnOven->yAxis->rescale(true);

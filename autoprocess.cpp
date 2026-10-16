@@ -1,5 +1,6 @@
 #include "autoprocess.h"
 #include "communication.h"
+
 #include <QSettings>
 #include <QFile>
 #include <QJsonDocument>
@@ -7,17 +8,47 @@
 #include <QJsonArray>
 #include <algorithm>
 
+//==========================================================
+// 辅助函数：返回 " | TCD=xx.xxs" 的字符串
+//   若未连接 TCD 时间提供者，返回空串，日志自然不带后缀
+//==========================================================
+static QString tcdTag(const std::function<double()> &provider)
+{
+    if (!provider) return QString();
+    double tcd = provider();
+    return QString(" | TCD=%1s").arg(tcd, 0, 'f', 2);
+}
+
+//==========================================================
+// 构造
+//==========================================================
 AutoProcessManager::AutoProcessManager(Communication *comm, QObject *parent)
     : QObject(parent)
     , m_comm(comm)
     , m_tickTimer(new QTimer(this))
 {
-    m_tickTimer->setInterval(50);       // 50ms 检查一次，足够精细
+    m_tickTimer->setInterval(50);   // 50ms 检查一次
     connect(m_tickTimer, &QTimer::timeout, this, &AutoProcessManager::onTick);
-
     loadFromSettings();
+
+    // 加载自动测量默认配置
+    QSettings settings("MyCompany", "MicroGC");
+    m_totalCycles    = settings.value("auto/cycleCount", 1).toInt();
+    m_autoSavePath   = settings.value("auto/savePath", "./auto_data").toString();
+    m_autoFilePrefix = settings.value("auto/filePrefix", "auto_measure").toString();
 }
 
+//==========================================================
+// TCD 时间提供者
+//==========================================================
+void AutoProcessManager::setTcdTimeProvider(std::function<double()> provider)
+{
+    m_tcdTimeProvider = provider;
+}
+
+//==========================================================
+// 事件组读写
+//==========================================================
 void AutoProcessManager::setGroups(const QList<AutoEventGroup> &groups)
 {
     m_groups = groups;
@@ -30,34 +61,46 @@ QString AutoProcessManager::currentStateName() const
 }
 
 //==========================================================
-// 启动
+// 启动 / 停止
 //==========================================================
 void AutoProcessManager::start()
 {
     if (m_running) return;
+
     if (!m_comm || !m_comm->isConnected()) {
         emit logMessage("自动流程", "通信未连接，无法开始");
         return;
     }
-
     if (m_groups.isEmpty()) {
         emit logMessage("自动流程", "至少需要一组事件");
         return;
     }
 
-    // 必须包含数据采集组
     bool hasCollect = false;
     for (const auto &g : m_groups) {
-        if (g.type == AutoEventType::Collect) {
-            hasCollect = true;
-            break;
-        }
+        if (g.type == AutoEventType::Collect) { hasCollect = true; break; }
     }
     if (!hasCollect) {
         emit logMessage("自动流程", "必须包含数据采集事件组");
         return;
     }
 
+    // 启动前重新读取全局配置
+    QSettings settings("MyCompany", "MicroGC");
+    m_totalCycles    = settings.value("auto/cycleCount", 1).toInt();
+    m_autoSavePath   = settings.value("auto/savePath", "./auto_data").toString();
+    m_autoFilePrefix = settings.value("auto/filePrefix", "auto_measure").toString();
+
+    m_currentCycle = 1;
+
+    emit logMessage("自动流程",
+                    QString("用户点击开始测量%1").arg(tcdTag(m_tcdTimeProvider)));
+
+    startSingleCycle();
+}
+
+void AutoProcessManager::startSingleCycle()
+{
     buildExecutionQueue();
     if (m_queue.isEmpty()) {
         emit logMessage("自动流程", "执行队列为空");
@@ -65,39 +108,45 @@ void AutoProcessManager::start()
     }
 
     m_currentIndex = 0;
-    m_running = true;
-    m_startMs = QDateTime::currentMSecsSinceEpoch();
-
+    m_running      = true;
+    m_startMs      = QDateTime::currentMSecsSinceEpoch();
     changeState();
-    emit logMessage("自动流程", QString("启动，共 %1 个事件").arg(m_queue.size()));
+
+    emit logMessage("自动流程",
+                    QString("第 %1/%2 次测量启动，共 %3 个事件%4")
+                        .arg(m_currentCycle)
+                        .arg(m_totalCycles)
+                        .arg(m_queue.size())
+                        .arg(tcdTag(m_tcdTimeProvider)));
+
     m_tickTimer->start();
 }
 
-//==========================================================
-// 手动停止
-//==========================================================
 void AutoProcessManager::stop()
 {
     if (!m_running) return;
 
     m_tickTimer->stop();
-    m_running = false;
+    m_running      = false;
     m_currentIndex = 0;
     m_queue.clear();
-
+    m_currentCycle = 0;
     changeState();
-    emit logMessage("自动流程", "用户停止，后续事件不再执行");
+
+    emit logMessage("自动流程",
+                    QString("用户停止，后续事件不再执行%1")
+                        .arg(tcdTag(m_tcdTimeProvider)));
     emit finished();
 }
 
 //==========================================================
-// 定时检查
+// 定时检查（含循环跳转）
 //==========================================================
 void AutoProcessManager::onTick()
 {
     if (!m_running) return;
 
-    qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - m_startMs;
+    qint64 elapsedMs  = QDateTime::currentMSecsSinceEpoch() - m_startMs;
     double elapsedMin = elapsedMs / 60000.0;
 
     while (m_currentIndex < m_queue.size() &&
@@ -108,12 +157,28 @@ void AutoProcessManager::onTick()
     }
 
     if (m_currentIndex >= m_queue.size()) {
-        // 全部执行完毕，自动停止
         m_tickTimer->stop();
-        m_running = false;
-        changeState();
-        emit logMessage("自动流程", "全部事件执行完毕");
-        emit finished();
+
+        QString tag = tcdTag(m_tcdTimeProvider);
+        emit logMessage("自动流程",
+                        QString("第 %1 次测量事件执行完毕%2")
+                            .arg(m_currentCycle)
+                            .arg(tag));
+
+        if (m_currentCycle < m_totalCycles) {
+            m_currentCycle++;
+            QTimer::singleShot(1000, this, [this]() {
+                startSingleCycle();
+            });
+        } else {
+            m_running = false;
+            changeState();
+            emit logMessage("自动流程",
+                            QString("全部 %1 次测量完成%2")
+                                .arg(m_totalCycles)
+                                .arg(tag));
+            emit finished();
+        }
     }
 }
 
@@ -126,15 +191,15 @@ void AutoProcessManager::buildExecutionQueue()
 
     for (const auto &g : m_groups) {
         EventItem on;
-        on.type = g.type;
+        on.type     = g.type;
         on.onAction = true;
-        on.timeMin = g.onTimeMin;
+        on.timeMin  = g.onTimeMin;
         m_queue.append(on);
 
         EventItem off;
-        off.type = g.type;
+        off.type     = g.type;
         off.onAction = false;
-        off.timeMin = g.offTimeMin;
+        off.timeMin  = g.offTimeMin;
         m_queue.append(off);
     }
 
@@ -149,17 +214,23 @@ void AutoProcessManager::buildExecutionQueue()
 //==========================================================
 void AutoProcessManager::executeEvent(const EventItem &e)
 {
+    QString tag = tcdTag(m_tcdTimeProvider);
+
     switch (e.type) {
 
     case AutoEventType::Collect:
         if (e.onAction) {
-            emit startDataSaveTriggered();
+            emit startDataSaveTriggered(m_autoSavePath, m_autoFilePrefix, m_currentCycle);
             emit logMessage("自动流程",
-                            QString("数据采集开始 (t=%1 min)").arg(e.timeMin, 0, 'f', 3));
+                            QString("数据采集开始 (t=%1 min%2)")
+                                .arg(e.timeMin, 0, 'f', 3)
+                                .arg(tag));
         } else {
             emit stopDataSaveTriggered();
             emit logMessage("自动流程",
-                            QString("数据采集停止 (t=%1 min)").arg(e.timeMin, 0, 'f', 3));
+                            QString("数据采集停止 (t=%1 min%2)")
+                                .arg(e.timeMin, 0, 'f', 3)
+                                .arg(tag));
         }
         break;
 
@@ -168,23 +239,22 @@ void AutoProcessManager::executeEvent(const EventItem &e)
             // 先开电磁阀，再开六通阀
             m_comm->setValveBit(0, true);
             m_comm->setSixWayValve1(true);
-
-            // 通知界面更新图形状态
             emit deviceStateChanged("电磁阀", true);
             emit deviceStateChanged("六通阀", true);
-
             emit logMessage("自动流程",
-                            QString("六通阀开启：先电磁阀 后六通阀 (t=%1 min)").arg(e.timeMin, 0, 'f', 3));
+                            QString("六通阀开启：先电磁阀 后六通阀 (t=%1 min%2)")
+                                .arg(e.timeMin, 0, 'f', 3)
+                                .arg(tag));
         } else {
             // 先关电磁阀，再关六通阀
             m_comm->setValveBit(0, false);
             m_comm->setSixWayValve1(false);
-
             emit deviceStateChanged("电磁阀", false);
             emit deviceStateChanged("六通阀", false);
-
             emit logMessage("自动流程",
-                            QString("六通阀关闭：先电磁阀 后六通阀 (t=%1 min)").arg(e.timeMin, 0, 'f', 3));
+                            QString("六通阀关闭：先电磁阀 后六通阀 (t=%1 min%2)")
+                                .arg(e.timeMin, 0, 'f', 3)
+                                .arg(tag));
         }
         break;
 
@@ -192,11 +262,15 @@ void AutoProcessManager::executeEvent(const EventItem &e)
         if (e.onAction) {
             emit polarityOnTriggered();
             emit logMessage("自动流程",
-                            QString("极性反转开启 (t=%1 min)").arg(e.timeMin, 0, 'f', 3));
+                            QString("极性反转开启 (t=%1 min%2)")
+                                .arg(e.timeMin, 0, 'f', 3)
+                                .arg(tag));
         } else {
             emit polarityOffTriggered();
             emit logMessage("自动流程",
-                            QString("极性反转关闭 (t=%1 min)").arg(e.timeMin, 0, 'f', 3));
+                            QString("极性反转关闭 (t=%1 min%2)")
+                                .arg(e.timeMin, 0, 'f', 3)
+                                .arg(tag));
         }
         break;
     }
@@ -216,8 +290,8 @@ void AutoProcessManager::saveToSettings() const
     settings.beginWriteArray("auto/groups");
     for (int i = 0; i < m_groups.size(); ++i) {
         settings.setArrayIndex(i);
-        settings.setValue("type", static_cast<int>(m_groups[i].type));
-        settings.setValue("onTime", m_groups[i].onTimeMin);
+        settings.setValue("type",    static_cast<int>(m_groups[i].type));
+        settings.setValue("onTime",  m_groups[i].onTimeMin);
         settings.setValue("offTime", m_groups[i].offTimeMin);
     }
     settings.endArray();
@@ -232,8 +306,8 @@ void AutoProcessManager::loadFromSettings()
     for (int i = 0; i < size; ++i) {
         settings.setArrayIndex(i);
         AutoEventGroup g;
-        g.type = static_cast<AutoEventType>(settings.value("type", 0).toInt());
-        g.onTimeMin = settings.value("onTime", 0.0).toDouble();
+        g.type       = static_cast<AutoEventType>(settings.value("type", 0).toInt());
+        g.onTimeMin  = settings.value("onTime",  0.0).toDouble();
         g.offTimeMin = settings.value("offTime", 1.0).toDouble();
         m_groups.append(g);
     }
@@ -250,13 +324,13 @@ bool AutoProcessManager::exportToFile(const QString &fileName) const
 
     for (const auto &g : m_groups) {
         QJsonObject obj;
-        obj["type"] = static_cast<int>(g.type);
-        obj["onTimeMin"] = g.onTimeMin;
+        obj["type"]       = static_cast<int>(g.type);
+        obj["onTimeMin"]  = g.onTimeMin;
         obj["offTimeMin"] = g.offTimeMin;
         arr.append(obj);
     }
     root["version"] = 1;
-    root["groups"] = arr;
+    root["groups"]  = arr;
 
     QFile file(fileName);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -281,14 +355,14 @@ bool AutoProcessManager::importFromFile(const QString &fileName)
         return false;
 
     QJsonObject root = doc.object();
-    QJsonArray arr = root["groups"].toArray();
+    QJsonArray  arr  = root["groups"].toArray();
 
     QList<AutoEventGroup> newGroups;
     for (const auto &v : arr) {
         QJsonObject obj = v.toObject();
         AutoEventGroup g;
-        g.type = static_cast<AutoEventType>(obj["type"].toInt());
-        g.onTimeMin = obj["onTimeMin"].toDouble();
+        g.type       = static_cast<AutoEventType>(obj["type"].toInt());
+        g.onTimeMin  = obj["onTimeMin"].toDouble();
         g.offTimeMin = obj["offTimeMin"].toDouble();
         newGroups.append(g);
     }

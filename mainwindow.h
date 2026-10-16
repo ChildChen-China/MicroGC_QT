@@ -23,7 +23,6 @@ private slots:
     void openConnectionDialog();
     void openDataProcessing();
     void openSettings();
-    void openAutoProcessSettings();
     void startStopAutoProcess();
     void resetSystem();
     void toggleLogVisible(bool visible);

@@ -152,7 +152,6 @@ AutoProcessDialog::AutoProcessDialog(AutoProcessManager *mgr, QWidget *parent)
 {
     setWindowTitle("自动流程设置");
     resize(900, 640);
-
     auto *mainLayout = new QVBoxLayout(this);
 
     // ========== 顶部按钮 ==========
@@ -195,18 +194,6 @@ AutoProcessDialog::AutoProcessDialog(AutoProcessManager *mgr, QWidget *parent)
     m_timeline = new TimelineWidget(this);
     mainLayout->addWidget(m_timeline, 0);
 
-    // ========== 文件保存/加载 ==========
-    auto *fileBar = new QHBoxLayout;
-    QPushButton *btnSave = new QPushButton("保存为文件...", this);
-    QPushButton *btnLoad = new QPushButton("从文件加载...", this);
-    fileBar->addWidget(btnSave);
-    fileBar->addWidget(btnLoad);
-    fileBar->addStretch();
-    mainLayout->addLayout(fileBar);
-
-    connect(btnSave, &QPushButton::clicked, this, &AutoProcessDialog::onSaveToFile);
-    connect(btnLoad, &QPushButton::clicked, this, &AutoProcessDialog::onLoadFromFile);
-
     // ========== 底部按钮 ==========
     auto *bottomBar = new QHBoxLayout;
     QPushButton *btnOk     = new QPushButton("确定", this);
@@ -221,6 +208,7 @@ AutoProcessDialog::AutoProcessDialog(AutoProcessManager *mgr, QWidget *parent)
 
     refreshTable();
 }
+
 
 //==========================================================
 // 刷新表格

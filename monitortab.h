@@ -1,6 +1,5 @@
 #ifndef MONITORTAB_H
 #define MONITORTAB_H
-
 #include <QWidget>
 #include <QVector>
 #include <QFile>
@@ -28,24 +27,19 @@ class SignalPlotPanel : public QGroupBox
     Q_OBJECT
 public:
     explicit SignalPlotPanel(const QString &title, QWidget *parent = nullptr);
-
     QPushButton* filterButton() const;
     bool isPaused() const;
     void setData(const QVector<double> &x, const QVector<double> &y);
-
     void setSnapshot(const QVector<double>& x, const QVector<double>& rawY, const QVector<double>& filtY);
     void clearSnapshot();
     bool hasSnapshot() const;
     QVector<double> snapshotX() const;
     QVector<double> snapshotRawY() const;
     QVector<double> snapshotFiltY() const;
-
 signals:
     void pauseStateChanged(bool paused);
-
 private:
     void applyInversion();
-
     InteractivePlot *m_plot;
     QPushButton *m_pauseBtn;
     QPushButton *m_invertBtn;
@@ -66,31 +60,27 @@ private:
 class MonitorTab : public QWidget
 {
     Q_OBJECT
-
 public:
     explicit MonitorTab(QWidget *parent = nullptr);
     ~MonitorTab();
-
     void setCommunication(Communication *comm);
     void setCollectPoints(int points);
     void setAveragePoints(int points);
-
     int getParameter(const QString &key) const;
     void setParameter(const QString &key, int value);
-
     void setTcdPowered(bool powered);
+    double currentTcdSeconds() const;
 
 public slots:
+    // 由自动流程触发的数据采集（独立路径、独立命名）
+    void startAutoDataSave(const QString &path, const QString &fileNamePrefix, int cycleIndex);
     // 由自动流程触发的数据采集（从当前时刻开始，不写历史缓冲）
     void startDataSaveNow();
     void stopDataSave();
-
     // 由自动流程触发的极性反转
     void startPolarityReversal();
     void stopPolarityReversal();
-
     void onDataUpdated();
-
     void setChannelAVisible(bool visible);
     void setChannelBVisible(bool visible);
     void setChannelABVisible(bool visible);
@@ -135,6 +125,7 @@ private:
     bool m_showFiltA;
     bool m_showFiltB;
     bool m_showFiltAB;
+
     SignalPlotPanel *m_panelA;
     SignalPlotPanel *m_panelB;
     SignalPlotPanel *m_panelAB;
@@ -186,6 +177,12 @@ private:
     bool m_tcdPowered = false;
     qint64 m_tcdActiveMs = 0;
     qint64 m_tcdLastTick = 0;
+
+    // 自动流程循环时间轴（只用于文件时间戳，不影响监视页）
+    bool   m_isAutoCycle = false;
+    double m_autoCycleBaseSec = 0.0;
+    double m_autoCycleOffsetSec = 0.0;
+    bool   m_autoCycleWaitFirst = false;
 
     // 极性反转
     bool m_polarityActive = false;   // 当前是否正在反转

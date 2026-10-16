@@ -5,6 +5,7 @@
 #include "monitortab.h"
 #include "othertab.h"
 #include "dataprocessing.h"
+#include "autoprocessdialog.h"
 
 #include <QToolBar>
 #include <QAction>
@@ -153,22 +154,21 @@ MainWindow::MainWindow(QWidget *parent)
                 QString msg = "状态: " + state;
                 m_log->appendLog("自动流程", msg);
                 m_log->appendFileOnly("自动流程", msg);
-
                 if (m_startStopAction) {
                     if (state == "空闲") {
-                        m_startStopAction->setText("开始自动流程");
+                        m_startStopAction->setText("开始测量");
                         m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
                     } else {
                         m_startStopAction->setText("停止");
                         m_startStopAction->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
                     }
                 }
-
-                // ★ 新增：通知 ControlTab 自动流程的运行状态
+                // 通知 ControlTab 自动流程的运行状态
                 if (m_controlTab) {
                     m_controlTab->setAutoProcessRunning(state != "空闲");
                 }
             });
+
 
     // ========== 通信信号 ==========
     connect(m_comm, &Communication::logPacket, this,
@@ -221,17 +221,22 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     m_tcdCheckTimer->start();
+    if (m_autoProcess && m_monitorTab) {
+        m_autoProcess->setTcdTimeProvider([this]() -> double {
+            return m_monitorTab ? m_monitorTab->currentTcdSeconds() : 0.0;
+        });
+    }
 
-    // ========== 自动流程 → MonitorTab（新接口） ==========
+    // ========== 自动流程 → MonitorTab ==========
     connect(m_autoProcess, &AutoProcessManager::startDataSaveTriggered,
-            m_monitorTab, &MonitorTab::startDataSaveNow);
+            m_monitorTab, &MonitorTab::startAutoDataSave);
     connect(m_autoProcess, &AutoProcessManager::stopDataSaveTriggered,
             m_monitorTab, &MonitorTab::stopDataSave);
-
     connect(m_autoProcess, &AutoProcessManager::polarityOnTriggered,
             m_monitorTab, &MonitorTab::startPolarityReversal);
     connect(m_autoProcess, &AutoProcessManager::polarityOffTriggered,
             m_monitorTab, &MonitorTab::stopPolarityReversal);
+
 
     // ========== 中央布局 ==========
     QWidget *central = new QWidget(this);
@@ -256,9 +261,6 @@ void MainWindow::createActions()
     m_connectAction = connectAct;
     m_iconConnectDefault = connectAct->icon();
 
-    // ========== 数据处理 ==========
-    QAction *dataAct = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogContentsView), "数据处理");
-
     // ========== 设置下拉菜单 ==========
     QToolButton *settingsBtn = new QToolButton(this);
     settingsBtn->setText("设置");
@@ -267,7 +269,6 @@ void MainWindow::createActions()
     settingsBtn->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     StayOpenMenu *settingsMenu = new StayOpenMenu(settingsBtn);
     QAction *globalSettingsAct = settingsMenu->addAction("全局参数设置");
-    QAction *autoSettingsAct = settingsMenu->addAction("自动流程设置");
     settingsMenu->addSeparator();
     QAction *hideAAct = settingsMenu->addAction("隐藏通道A");
     hideAAct->setCheckable(true);
@@ -282,11 +283,14 @@ void MainWindow::createActions()
     settingsBtn->setMenu(settingsMenu);
     toolbar->addWidget(settingsBtn);
 
-    // ========== 开始/停止 ==========
-    m_startStopAction = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始自动流程");
+    // ========== 开始/停止测量 ==========
+    m_startStopAction = toolbar->addAction(style()->standardIcon(QStyle::SP_MediaPlay), "开始测量");
 
     // ========== 复位 ==========
     QAction *resetAct = toolbar->addAction(style()->standardIcon(QStyle::SP_BrowserReload), "复位");
+
+    // ========== 数据处理 ==========
+    QAction *dataAct = toolbar->addAction(style()->standardIcon(QStyle::SP_FileDialogContentsView), "数据处理");
 
     // ========== TC4 加热开关 ==========
     m_ovenAction = toolbar->addAction(m_iconOvenOff, "TC4：关");
@@ -295,19 +299,16 @@ void MainWindow::createActions()
 
     // ========== TCD 电源状态指示灯 ==========
     m_tcdPowerAction = toolbar->addAction(m_iconTcdOff, "TCD电源：未连接");
-    m_tcdPowerAction->setToolTip("TCD电源状态（由 0x000A BIT1 判断）");
-
+    m_tcdPowerAction->setToolTip("TCD电源状态（由 0x00A BIT1 判断）");
     updateTcdPowerIcon();
     updateOvenIcon();
 
-    // ========== 连接信号槽 ==========
+    // ========== 信号槽连接 ==========
     connect(connectAct, &QAction::triggered, this, &MainWindow::openConnectionDialog);
     connect(dataAct, &QAction::triggered, this, &MainWindow::openDataProcessing);
     connect(globalSettingsAct, &QAction::triggered, this, &MainWindow::openSettings);
-    connect(autoSettingsAct, &QAction::triggered, this, &MainWindow::openAutoProcessSettings);
     connect(m_startStopAction, &QAction::triggered, this, &MainWindow::startStopAutoProcess);
     connect(resetAct, &QAction::triggered, this, &MainWindow::resetSystem);
-
     connect(hideAAct, &QAction::toggled, this, [this](bool checked) {
         if (m_monitorTab) m_monitorTab->setChannelAVisible(!checked);
     });
@@ -596,108 +597,380 @@ void MainWindow::openSettings()
 {
     QDialog dlg(this);
     dlg.setWindowTitle("全局参数设置");
-    dlg.setMinimumWidth(520);
+    dlg.setMinimumSize(1000, 720);
 
-    QVBoxLayout *mainLayout = new QVBoxLayout(&dlg);
+    // ============ 外层滚动区 ============
+    auto *dlgLayout = new QVBoxLayout(&dlg);
+    dlgLayout->setContentsMargins(0, 0, 0, 0);
 
-    // ================= 仪器参数 =================
-    QGroupBox *instrGroup = new QGroupBox("仪器参数", &dlg);
-    QFormLayout *instrForm = new QFormLayout(instrGroup);
+    auto *scroll = new QScrollArea(&dlg);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    dlgLayout->addWidget(scroll);
 
-    QSpinBox *flow1Spin = new QSpinBox(instrGroup);
-    flow1Spin->setRange(1, 1000);
-    flow1Spin->setSuffix(" 电压");
-    instrForm->addRow("流量器A电压:", flow1Spin);
+    auto *content = new QWidget();
+    auto *mainLayout = new QVBoxLayout(content);
+    mainLayout->setContentsMargins(14, 14, 14, 14);
+    mainLayout->setSpacing(12);
+    scroll->setWidget(content);
 
-    QSpinBox *flow2Spin = new QSpinBox(instrGroup);
-    flow2Spin->setRange(1, 1000);
-    flow2Spin->setSuffix(" 电压");
-    instrForm->addRow("流量器B电压:", flow2Spin);
+    // ============================================================
+    //  两列布局
+    // ============================================================
+    auto *topRow = new QHBoxLayout;
+    topRow->setSpacing(14);
 
-    QSpinBox *ovenTempSpin = new QSpinBox(instrGroup);
-    ovenTempSpin->setRange(1, 1000);
-    ovenTempSpin->setSuffix(" ℃");
-    instrForm->addRow("柱温箱温度:", ovenTempSpin);
+    // ---------------- 左列：仪器 / TCD / 底部按钮 ----------------
+    auto *leftCol = new QVBoxLayout;
+    leftCol->setSpacing(10);
 
-    QSpinBox *tcdTempSpin = new QSpinBox(instrGroup);
-    tcdTempSpin->setRange(0, 500);
-    tcdTempSpin->setSuffix(" ℃");
-    tcdTempSpin->setToolTip("TS 98\r  设置TCD温度");
-    instrForm->addRow("TCD温度:", tcdTempSpin);
+    // ----- 仪器参数 -----
+    auto *instrGroup = new QGroupBox("仪器参数", content);
+    QSpinBox *flow1Spin = nullptr;
+    QSpinBox *flow2Spin = nullptr;
+    QSpinBox *ovenTempSpin = nullptr;
+    QSpinBox *tcdTempSpin = nullptr;
+    {
+        auto *form = new QFormLayout(instrGroup);
+        form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        form->setHorizontalSpacing(12);
+        form->setVerticalSpacing(10);
 
-    mainLayout->addWidget(instrGroup);
+        flow1Spin = new QSpinBox(instrGroup);
+        flow1Spin->setRange(1, 1000);
+        flow1Spin->setSuffix(" 电压");
+        form->addRow("载气电压:", flow1Spin);
 
-    // ================= TCD 参数 =================
-    QGroupBox *tcdGroup = new QGroupBox("TCD 参数", &dlg);
-    QFormLayout *tcdForm = new QFormLayout(tcdGroup);
+        flow2Spin = new QSpinBox(instrGroup);
+        flow2Spin->setRange(1, 1000);
+        flow2Spin->setSuffix(" 电压");
+        form->addRow("参比气电压:", flow2Spin);
 
-    QSpinBox *collectPointsSpin = new QSpinBox(tcdGroup);
-    collectPointsSpin->setRange(100, 100000);
-    QPushButton *setCollectBtn = new QPushButton("设置", tcdGroup);
-    QHBoxLayout *collectRow = new QHBoxLayout;
-    collectRow->addWidget(collectPointsSpin);
-    collectRow->addWidget(setCollectBtn);
-    tcdForm->addRow("采集点数:", collectRow);
+        ovenTempSpin = new QSpinBox(instrGroup);
+        ovenTempSpin->setRange(1, 1000);
+        ovenTempSpin->setSuffix(" ℃");
+        form->addRow("柱温箱温度:", ovenTempSpin);
 
-    QSpinBox *averageSpin = new QSpinBox(tcdGroup);
-    averageSpin->setRange(1, 1000);
-    QPushButton *setAverageBtn = new QPushButton("设置", tcdGroup);
-    QHBoxLayout *averageRow = new QHBoxLayout;
-    averageRow->addWidget(averageSpin);
-    averageRow->addWidget(setAverageBtn);
-    tcdForm->addRow("均点设置:", averageRow);
+        tcdTempSpin = new QSpinBox(instrGroup);
+        tcdTempSpin->setRange(0, 500);
+        tcdTempSpin->setSuffix(" ℃");
+        tcdTempSpin->setToolTip("TS 98\r  设置TCD温度");
+        form->addRow("TCD温度:", tcdTempSpin);
+    }
+    leftCol->addWidget(instrGroup);
 
-    // 最小精度
-    QComboBox *precisionCombo = new QComboBox(tcdGroup);
-    precisionCombo->addItem("0.001", 1);
-    precisionCombo->addItem("0.01", 10);
-    precisionCombo->addItem("0.05", 50);
-    precisionCombo->addItem("0.1", 100);
-    precisionCombo->addItem("1", 1000);
-    precisionCombo->setToolTip("PF 0.05\r   设置最小精度[]");
-    tcdForm->addRow("最小精度:", precisionCombo);
+    // ----- TCD 参数 -----
+    auto *tcdGroup = new QGroupBox("TCD 参数", content);
+    QSpinBox *collectPointsSpin = nullptr;
+    QSpinBox *averageSpin = nullptr;
+    QComboBox *precisionCombo = nullptr;
+    QDoubleSpinBox *levelASpin = nullptr;
+    QDoubleSpinBox *levelBSpin = nullptr;
+    QDoubleSpinBox *levelABSpin = nullptr;
+    QPushButton *setCollectBtn = nullptr;
+    QPushButton *setAverageBtn = nullptr;
+    {
+        auto *form = new QFormLayout(tcdGroup);
+        form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        form->setHorizontalSpacing(12);
+        form->setVerticalSpacing(10);
 
-    // A 电平
-    QDoubleSpinBox *levelASpin = new QDoubleSpinBox(tcdGroup);
-    levelASpin->setRange(-1.2, 1.2);
-    levelASpin->setDecimals(1);
-    levelASpin->setSingleStep(0.1);
-    levelASpin->setSuffix(" V");
-    levelASpin->setToolTip("ZA 0.1\r");
-    tcdForm->addRow("A电平:", levelASpin);
+        collectPointsSpin = new QSpinBox(tcdGroup);
+        collectPointsSpin->setRange(100, 100000);
+        setCollectBtn = new QPushButton("设置", tcdGroup);
+        auto *collectRow = new QHBoxLayout;
+        collectRow->setContentsMargins(0, 0, 0, 0);
+        collectRow->addWidget(collectPointsSpin);
+        collectRow->addWidget(setCollectBtn);
+        form->addRow("采集点数:", collectRow);
 
-    // B 电平
-    QDoubleSpinBox *levelBSpin = new QDoubleSpinBox(tcdGroup);
-    levelBSpin->setRange(-1.2, 1.2);
-    levelBSpin->setDecimals(1);
-    levelBSpin->setSingleStep(0.1);
-    levelBSpin->setSuffix(" V");
-    levelBSpin->setToolTip("ZB 0.1\r");
-    tcdForm->addRow("B电平:", levelBSpin);
+        averageSpin = new QSpinBox(tcdGroup);
+        averageSpin->setRange(1, 100);
+        setAverageBtn = new QPushButton("设置", tcdGroup);
+        auto *averageRow = new QHBoxLayout;
+        averageRow->setContentsMargins(0, 0, 0, 0);
+        averageRow->addWidget(averageSpin);
+        averageRow->addWidget(setAverageBtn);
+        form->addRow("均点设置:", averageRow);
 
-    // AB 电平
-    QDoubleSpinBox *levelABSpin = new QDoubleSpinBox(tcdGroup);
-    levelABSpin->setRange(-1.2, 1.2);
-    levelABSpin->setDecimals(1);
-    levelABSpin->setSingleStep(0.1);
-    levelABSpin->setSuffix(" V");
-    levelABSpin->setToolTip("ZR 0.1\r");
-    tcdForm->addRow("AB电平:", levelABSpin);
+        precisionCombo = new QComboBox(tcdGroup);
+        precisionCombo->addItem("0.001", 1);
+        precisionCombo->addItem("0.01", 10);
+        precisionCombo->addItem("0.05", 50);
+        precisionCombo->addItem("0.1", 100);
+        precisionCombo->addItem("1", 1000);
+        precisionCombo->setToolTip("PF 0.05\r   设置最小精度[]");
+        form->addRow("最小精度:", precisionCombo);
 
-    mainLayout->addWidget(tcdGroup);
+        levelASpin = new QDoubleSpinBox(tcdGroup);
+        levelASpin->setRange(-1.2, 1.2);
+        levelASpin->setDecimals(1);
+        levelASpin->setSingleStep(0.1);
+        levelASpin->setSuffix(" V");
+        levelASpin->setToolTip("ZA 0.1\r");
+        form->addRow("A电平:", levelASpin);
 
-    // ================= 底部按钮 =================
-    QHBoxLayout *buttonLayout = new QHBoxLayout;
-    QPushButton *applyBtn = new QPushButton("应用", &dlg);
-    QPushButton *closeBtn = new QPushButton("关闭", &dlg);
-    buttonLayout->addStretch();
-    buttonLayout->addWidget(applyBtn);
-    buttonLayout->addWidget(closeBtn);
-    mainLayout->addLayout(buttonLayout);
+        levelBSpin = new QDoubleSpinBox(tcdGroup);
+        levelBSpin->setRange(-1.2, 1.2);
+        levelBSpin->setDecimals(1);
+        levelBSpin->setSingleStep(0.1);
+        levelBSpin->setSuffix(" V");
+        levelBSpin->setToolTip("ZB 0.1\r");
+        form->addRow("B电平:", levelBSpin);
+
+        levelABSpin = new QDoubleSpinBox(tcdGroup);
+        levelABSpin->setRange(-1.2, 1.2);
+        levelABSpin->setDecimals(1);
+        levelABSpin->setSingleStep(0.1);
+        levelABSpin->setSuffix(" V");
+        levelABSpin->setToolTip("ZR 0.1\r");
+        form->addRow("AB电平:", levelABSpin);
+    }
+    leftCol->addWidget(tcdGroup);
+
+    // ----- 底部按钮（导出 / 导入 / 应用 / 关闭）-----
+    auto *leftBtnBar = new QHBoxLayout;
+    QPushButton *saveConfigBtn = new QPushButton("导出配置", content);
+    QPushButton *loadConfigBtn = new QPushButton("导入配置", content);
+    QPushButton *applyBtn      = new QPushButton("应用",     content);
+    QPushButton *closeBtn      = new QPushButton("关闭",     content);
+    leftBtnBar->addWidget(saveConfigBtn);
+    leftBtnBar->addWidget(loadConfigBtn);
+    leftBtnBar->addStretch();
+    leftBtnBar->addWidget(applyBtn);
+    leftBtnBar->addWidget(closeBtn);
+    leftCol->addLayout(leftBtnBar);
+
+    leftCol->addStretch();
+
+    // ---------------- 右列：自动流程 / 自动流程配置 ----------------
+    auto *rightCol = new QVBoxLayout;
+    rightCol->setSpacing(10);
+
+    // ----- 自动流程 -----
+    auto *autoProcessGroup = new QGroupBox("自动流程", content);
+    auto *autoProcessLayout = new QVBoxLayout(autoProcessGroup);
+    autoProcessLayout->setSpacing(8);
+
+    auto *btnBar = new QHBoxLayout;
+    QPushButton *btnAddCollect  = new QPushButton("+ 数据采集", autoProcessGroup);
+    QPushButton *btnAddValve    = new QPushButton("+ 六通阀", autoProcessGroup);
+    QPushButton *btnAddPolarity = new QPushButton("+ 极性反转", autoProcessGroup);
+    QPushButton *btnRemove      = new QPushButton("- 删除选中", autoProcessGroup);
+    btnBar->addWidget(btnAddCollect);
+    btnBar->addWidget(btnAddValve);
+    btnBar->addWidget(btnAddPolarity);
+    btnBar->addWidget(btnRemove);
+    btnBar->addStretch();
+    autoProcessLayout->addLayout(btnBar);
+
+    QTableWidget *eventTable = new QTableWidget(autoProcessGroup);
+    eventTable->setColumnCount(4);
+    eventTable->setHorizontalHeaderLabels({"类型", "开时间(min)", "关时间(min)", "操作"});
+    eventTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    eventTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    eventTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    eventTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    eventTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    eventTable->setAlternatingRowColors(true);
+    eventTable->verticalHeader()->setDefaultSectionSize(34);
+    eventTable->setMinimumHeight(150);
+    autoProcessLayout->addWidget(eventTable, 1);
+
+    auto *timelineLabel = new QLabel("时间轴总览：", autoProcessGroup);
+    autoProcessLayout->addWidget(timelineLabel);
+    auto *timeline = new TimelineWidget(autoProcessGroup);
+    timeline->setMinimumHeight(120);
+    autoProcessLayout->addWidget(timeline);
+
+    rightCol->addWidget(autoProcessGroup, 1);
+
+    // ----- 自动流程配置 -----
+    auto *autoConfigGroup = new QGroupBox("自动流程配置", content);
+    QLineEdit *autoPathEdit = nullptr;
+    QLineEdit *autoNameEdit = nullptr;
+    QSpinBox  *cycleSpin    = nullptr;
+    {
+        auto *form = new QFormLayout(autoConfigGroup);
+        form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        form->setHorizontalSpacing(12);
+        form->setVerticalSpacing(10);
+
+        autoPathEdit = new QLineEdit(autoConfigGroup);
+        form->addRow("保存路径:", autoPathEdit);
+
+        autoNameEdit = new QLineEdit(autoConfigGroup);
+        form->addRow("文件名前缀:", autoNameEdit);
+
+        cycleSpin = new QSpinBox(autoConfigGroup);
+        cycleSpin->setRange(1, 100);
+        cycleSpin->setSuffix(" 次");
+        form->addRow("测量次数:", cycleSpin);
+    }
+    rightCol->addWidget(autoConfigGroup, 0);
+
+    // ---------------- 组装 ----------------
+    topRow->addLayout(leftCol, 1);
+    topRow->addLayout(rightCol, 1);
+    mainLayout->addLayout(topRow, 1);
+
+    // ============================================================
+    //  事件表格刷新
+    // ============================================================
+    bool refreshing = false;
+    std::function<void()> refreshTable = [&]() {
+        refreshing = true;
+        auto groups = m_autoProcess->groups();
+        eventTable->setRowCount(groups.size());
+        for (int i = 0; i < groups.size(); ++i) {
+            const auto &g = groups[i];
+
+            QString typeStr;
+            QColor color;
+            switch (g.type) {
+            case AutoEventType::Collect:
+                typeStr = "数据采集"; color = QColor(0, 130, 0); break;
+            case AutoEventType::Valve:
+                typeStr = "六通阀";   color = QColor(0, 0, 210); break;
+            case AutoEventType::Polarity:
+                typeStr = "极性反转"; color = QColor(210, 140, 0); break;
+            }
+            auto *typeLabel = new QLabel(typeStr, eventTable);
+            QFont f = typeLabel->font();
+            f.setBold(true);
+            typeLabel->setFont(f);
+            QPalette pal = typeLabel->palette();
+            pal.setColor(QPalette::WindowText, color);
+            typeLabel->setPalette(pal);
+            typeLabel->setAlignment(Qt::AlignCenter);
+            eventTable->setCellWidget(i, 0, typeLabel);
+
+            auto *onSpin = new QDoubleSpinBox(eventTable);
+            onSpin->setRange(0.0, 999.0);
+            onSpin->setDecimals(3);
+            onSpin->setSingleStep(0.01);
+            onSpin->setValue(g.onTimeMin);
+            onSpin->setSuffix(" min");
+            eventTable->setCellWidget(i, 1, onSpin);
+
+            auto *offSpin = new QDoubleSpinBox(eventTable);
+            offSpin->setRange(0.0, 999.0);
+            offSpin->setDecimals(3);
+            offSpin->setSingleStep(0.01);
+            offSpin->setValue(g.offTimeMin);
+            offSpin->setSuffix(" min");
+            eventTable->setCellWidget(i, 2, offSpin);
+
+            connect(onSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                    eventTable, [&, i](double v) {
+                        if (refreshing) return;
+                        auto list = m_autoProcess->groups();
+                        if (i >= 0 && i < list.size()) {
+                            list[i].onTimeMin = v;
+                            m_autoProcess->setGroups(list);   // ← 实时保存
+                            timeline->setGroups(list);
+                        }
+                    });
+            connect(offSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                    eventTable, [&, i](double v) {
+                        if (refreshing) return;
+                        auto list = m_autoProcess->groups();
+                        if (i >= 0 && i < list.size()) {
+                            list[i].offTimeMin = v;
+                            m_autoProcess->setGroups(list);   // ← 实时保存
+                            timeline->setGroups(list);
+                        }
+                    });
+
+            auto *delBtn = new QPushButton("删除", eventTable);
+            eventTable->setCellWidget(i, 3, delBtn);
+            connect(delBtn, &QPushButton::clicked, eventTable, [&, i]() {
+                auto list = m_autoProcess->groups();
+                if (i >= 0 && i < list.size()) {
+                    if (list.size() <= 1) {
+                        QMessageBox::information(&dlg, "提示", "至少需要保留一组事件");
+                        return;
+                    }
+                    list.removeAt(i);
+                    m_autoProcess->setGroups(list);   // ← 实时保存
+                    refreshTable();
+                }
+            });
+        }
+        timeline->setGroups(groups);
+        refreshing = false;
+    };
+
+    // 增删按钮
+    connect(btnAddCollect, &QPushButton::clicked, &dlg, [&]() {
+        auto list = m_autoProcess->groups();
+        double maxT = 0.0;
+        for (const auto &g : list) maxT = qMax(maxT, g.offTimeMin);
+        AutoEventGroup g;
+        g.type = AutoEventType::Collect;
+        g.onTimeMin = list.isEmpty() ? 0.01 : (maxT + 0.1);
+        g.offTimeMin = g.onTimeMin + 1.0;
+        list.append(g);
+        m_autoProcess->setGroups(list);   // ← 实时保存
+        refreshTable();
+    });
+    connect(btnAddValve, &QPushButton::clicked, &dlg, [&]() {
+        auto list = m_autoProcess->groups();
+        double maxT = 0.0;
+        for (const auto &g : list) maxT = qMax(maxT, g.offTimeMin);
+        AutoEventGroup g;
+        g.type = AutoEventType::Valve;
+        g.onTimeMin = maxT + 0.1;
+        g.offTimeMin = g.onTimeMin + 1.0;
+        list.append(g);
+        m_autoProcess->setGroups(list);   // ← 实时保存
+        refreshTable();
+    });
+    connect(btnAddPolarity, &QPushButton::clicked, &dlg, [&]() {
+        auto list = m_autoProcess->groups();
+        double maxT = 0.0;
+        for (const auto &g : list) maxT = qMax(maxT, g.offTimeMin);
+        AutoEventGroup g;
+        g.type = AutoEventType::Polarity;
+        g.onTimeMin = maxT + 0.1;
+        g.offTimeMin = g.onTimeMin + 1.0;
+        list.append(g);
+        m_autoProcess->setGroups(list);   // ← 实时保存
+        refreshTable();
+    });
+    connect(btnRemove, &QPushButton::clicked, &dlg, [&]() {
+        auto selected = eventTable->selectionModel()->selectedRows();
+        if (selected.isEmpty()) {
+            QMessageBox::information(&dlg, "提示", "请先选中要删除的行");
+            return;
+        }
+        auto list = m_autoProcess->groups();
+        if (list.size() - selected.size() < 1) {
+            QMessageBox::information(&dlg, "提示", "至少需要保留一组事件");
+            return;
+        }
+        QList<int> rows;
+        for (const auto &idx : selected) rows.append(idx.row());
+        std::sort(rows.begin(), rows.end(), std::greater<int>());
+        for (int r : rows) {
+            if (r >= 0 && r < list.size()) list.removeAt(r);
+        }
+        m_autoProcess->setGroups(list);   // ← 实时保存
+        refreshTable();
+    });
+
+    refreshTable();
 
     connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
 
-    // ================= 从 QSettings 读取参数 =================
+    // ============================================================
+    //  读取 QSettings 初始值
+    // ============================================================
     QSettings settings("MyCompany", "MicroGC");
     flow1Spin->setValue(settings.value("global/flow1Voltage", 5).toInt());
     flow2Spin->setValue(settings.value("global/flow2Voltage", 5).toInt());
@@ -705,22 +978,43 @@ void MainWindow::openSettings()
     tcdTempSpin->setValue(settings.value("global/tcdTemp", 25).toInt());
     collectPointsSpin->setValue(settings.value("global/collectPoints", 1000).toInt());
     averageSpin->setValue(settings.value("global/averagePoints", 5).toInt());
-
     if (m_monitorTab) {
         m_monitorTab->setCollectPoints(collectPointsSpin->value());
         m_monitorTab->setAveragePoints(averageSpin->value());
     }
-
     int prec = settings.value("global/precision", 1).toInt();
     int pid = precisionCombo->findData(prec);
     if (pid >= 0) precisionCombo->setCurrentIndex(pid);
-
-    // 电平从 QSettings 中读回 ×10 后的整数值，显示时除以 10
     levelASpin->setValue(settings.value("global/levelA", 0).toInt() / 10.0);
     levelBSpin->setValue(settings.value("global/levelB", 0).toInt() / 10.0);
     levelABSpin->setValue(settings.value("global/levelAB", 0).toInt() / 10.0);
 
-    // ================= 内部“设置”按钮 =================
+    autoPathEdit->setText(settings.value("auto/savePath", "./auto_data").toString());
+    autoNameEdit->setText(settings.value("auto/filePrefix", "auto_measure").toString());
+    cycleSpin->setValue(settings.value("auto/cycleCount", 1).toInt());
+
+    // ============================================================
+    //  自动流程配置：实时保存（读取初始值后再连接，避免触发多余写入）
+    // ============================================================
+    connect(autoPathEdit, &QLineEdit::textChanged, &dlg, [](const QString &text) {
+        QSettings s("MyCompany", "MicroGC");
+        s.setValue("auto/savePath", text);
+        s.sync();
+    });
+    connect(autoNameEdit, &QLineEdit::textChanged, &dlg, [](const QString &text) {
+        QSettings s("MyCompany", "MicroGC");
+        s.setValue("auto/filePrefix", text);
+        s.sync();
+    });
+    connect(cycleSpin, qOverload<int>(&QSpinBox::valueChanged), &dlg, [](int val) {
+        QSettings s("MyCompany", "MicroGC");
+        s.setValue("auto/cycleCount", val);
+        s.sync();
+    });
+
+    // ============================================================
+    //  采集点数 / 均点数 的"设置"按钮
+    // ============================================================
     connect(setCollectBtn, &QPushButton::clicked, this, [this, collectPointsSpin]() {
         if (m_monitorTab) m_monitorTab->setCollectPoints(collectPointsSpin->value());
         m_log->appendLog("设置", QString("采集点数设置为 %1").arg(collectPointsSpin->value()));
@@ -730,9 +1024,125 @@ void MainWindow::openSettings()
         m_log->appendLog("设置", QString("均点设置设置为 %1").arg(averageSpin->value()));
     });
 
-    // ================= 应用按钮 =================
+    // ============================================================
+    //  导出配置
+    // ============================================================
+    connect(saveConfigBtn, &QPushButton::clicked, &dlg, [&]() {
+        QString fileName = QFileDialog::getSaveFileName(&dlg, "保存全局配置", QString(), "配置文件 (*.json)");
+        if (fileName.isEmpty()) return;
+
+        QJsonObject root;
+        root["version"] = 1;
+
+        QJsonObject instrObj;
+        instrObj["flow1Voltage"] = flow1Spin->value();
+        instrObj["flow2Voltage"] = flow2Spin->value();
+        instrObj["ovenTemp"]     = ovenTempSpin->value();
+        instrObj["tcdTemp"]      = tcdTempSpin->value();
+        root["instrument"] = instrObj;
+
+        QJsonObject tcdObj;
+        tcdObj["collectPoints"] = collectPointsSpin->value();
+        tcdObj["averagePoints"] = averageSpin->value();
+        tcdObj["precision"]     = precisionCombo->currentData().toInt();
+        tcdObj["levelA"]        = qRound(levelASpin->value() * 10.0);
+        tcdObj["levelB"]        = qRound(levelBSpin->value() * 10.0);
+        tcdObj["levelAB"]       = qRound(levelABSpin->value() * 10.0);
+        root["tcd"] = tcdObj;
+
+        QJsonObject autoObj;
+        autoObj["savePath"]   = autoPathEdit->text();
+        autoObj["filePrefix"] = autoNameEdit->text();
+        autoObj["cycleCount"] = cycleSpin->value();
+        root["autoMeasure"] = autoObj;
+
+        QJsonArray groupsArr;
+        auto groups = m_autoProcess->groups();
+        for (const auto &g : groups) {
+            QJsonObject gObj;
+            gObj["type"] = static_cast<int>(g.type);
+            gObj["onTimeMin"] = g.onTimeMin;
+            gObj["offTimeMin"] = g.offTimeMin;
+            groupsArr.append(gObj);
+        }
+        root["autoGroups"] = groupsArr;
+
+        QFile file(fileName);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(&dlg, "保存失败", "无法写入配置文件");
+            return;
+        }
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        file.close();
+        QMessageBox::information(&dlg, "保存成功", "全局配置已导出到:\n" + fileName);
+    });
+
+    // ============================================================
+    //  导入配置
+    // ============================================================
+    connect(loadConfigBtn, &QPushButton::clicked, &dlg, [&]() {
+        QString fileName = QFileDialog::getOpenFileName(&dlg, "加载全局配置", QString(), "配置文件 (*.json)");
+        if (fileName.isEmpty()) return;
+
+        QFile file(fileName);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QMessageBox::warning(&dlg, "加载失败", "无法读取配置文件");
+            return;
+        }
+        QByteArray data = file.readAll();
+        file.close();
+
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+        if (err.error != QJsonParseError::NoError) {
+            QMessageBox::warning(&dlg, "加载失败", "配置文件格式错误");
+            return;
+        }
+        QJsonObject root = doc.object();
+
+        QJsonObject instrObj = root["instrument"].toObject();
+        flow1Spin->setValue(instrObj["flow1Voltage"].toInt());
+        flow2Spin->setValue(instrObj["flow2Voltage"].toInt());
+        ovenTempSpin->setValue(instrObj["ovenTemp"].toInt());
+        tcdTempSpin->setValue(instrObj["tcdTemp"].toInt());
+
+        QJsonObject tcdObj = root["tcd"].toObject();
+        collectPointsSpin->setValue(tcdObj["collectPoints"].toInt());
+        averageSpin->setValue(tcdObj["averagePoints"].toInt());
+        int precVal = tcdObj["precision"].toInt();
+        int idx = precisionCombo->findData(precVal);
+        if (idx >= 0) precisionCombo->setCurrentIndex(idx);
+        levelASpin->setValue(tcdObj["levelA"].toInt() / 10.0);
+        levelBSpin->setValue(tcdObj["levelB"].toInt() / 10.0);
+        levelABSpin->setValue(tcdObj["levelAB"].toInt() / 10.0);
+
+        QJsonObject autoObj = root["autoMeasure"].toObject();
+        autoPathEdit->setText(autoObj["savePath"].toString());
+        autoNameEdit->setText(autoObj["filePrefix"].toString());
+        cycleSpin->setValue(autoObj["cycleCount"].toInt());
+
+        QJsonArray groupsArr = root["autoGroups"].toArray();
+        QList<AutoEventGroup> newGroups;
+        for (const auto &v : groupsArr) {
+            QJsonObject gObj = v.toObject();
+            AutoEventGroup g;
+            g.type = static_cast<AutoEventType>(gObj["type"].toInt());
+            g.onTimeMin = gObj["onTimeMin"].toDouble();
+            g.offTimeMin = gObj["offTimeMin"].toDouble();
+            newGroups.append(g);
+        }
+        m_autoProcess->setGroups(newGroups);
+        refreshTable();
+
+        QMessageBox::information(&dlg, "加载成功", "配置已加载，点击「应用」生效");
+    });
+
+    // ============================================================
+    //  应用：只作用于仪器参数与 TCD 参数
+    //    自动流程 / 自动流程配置 → 均实时保存，不在此触发
+    // ============================================================
     connect(applyBtn, &QPushButton::clicked, &dlg, [&]() {
-        // 1. 保存到 QSettings
+        // 只写仪器 + TCD 相关键
         settings.setValue("global/flow1Voltage", flow1Spin->value());
         settings.setValue("global/flow2Voltage", flow2Spin->value());
         settings.setValue("global/ovenTemp", ovenTempSpin->value());
@@ -740,13 +1150,11 @@ void MainWindow::openSettings()
         settings.setValue("global/collectPoints", collectPointsSpin->value());
         settings.setValue("global/averagePoints", averageSpin->value());
         settings.setValue("global/precision", precisionCombo->currentData().toInt());
-        // 电平保存为 ×10 后的整数值
         settings.setValue("global/levelA", qRound(levelASpin->value() * 10.0));
         settings.setValue("global/levelB", qRound(levelBSpin->value() * 10.0));
         settings.setValue("global/levelAB", qRound(levelABSpin->value() * 10.0));
         settings.sync();
 
-        // 2. 更新 MonitorTab 界面控件值
         if (m_monitorTab) {
             m_monitorTab->setParameter("temperature", tcdTempSpin->value());
             m_monitorTab->setParameter("levelA", qRound(levelASpin->value() * 10.0));
@@ -758,21 +1166,16 @@ void MainWindow::openSettings()
             m_monitorTab->applyGlobalParameters();
         }
 
-        // 3. 延迟发送流量电压和柱温箱
         int flow1Val = flow1Spin->value();
         int flow2Val = flow2Spin->value();
         int ovenTemp = ovenTempSpin->value();
         QTimer::singleShot(1500, this, [this, flow1Val, flow2Val, ovenTemp]() {
             if (!m_comm) return;
-
-            // 批量写流量电压 0x0402~0x0403
             QVector<quint16> flowVals = {
                 static_cast<quint16>(flow1Val),
                 static_cast<quint16>(flow2Val)
             };
-            m_comm->writeMultipleRegisters(0x0402, flowVals, "全局设置: 流量电压1+电压2");
-
-            // 柱温箱温度+使能
+            m_comm->writeMultipleRegisters(0x0402, flowVals, "全局设置: 载气+参比气电压");
             m_comm->requestRegisterRead(0x0400, [this, ovenTemp](quint16) {
                 QVector<quint16> ovenVals = {
                     static_cast<quint16>(ovenTemp),
@@ -782,18 +1185,10 @@ void MainWindow::openSettings()
             });
         });
 
-        m_log->appendLog("设置", "全局参数已应用并保存");
-        m_log->appendFileOnly("设置", "全局参数已应用并保存");
+        m_log->appendLog("设置", "仪器参数与 TCD 参数已应用并保存");
+        m_log->appendFileOnly("设置", "仪器参数与 TCD 参数已应用并保存");
     });
 
-    dlg.exec();
-}
-
-#include "autoprocessdialog.h"
-
-void MainWindow::openAutoProcessSettings()
-{
-    AutoProcessDialog dlg(m_autoProcess, this);
     dlg.exec();
 }
 

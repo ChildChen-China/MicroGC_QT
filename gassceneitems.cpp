@@ -517,19 +517,22 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     scene->addLine(1805, 1367, 346, 1367, blackPen);
     addArrow(scene, QPointF(1588, 1367), false);
 
-    auto *flow1ValueLabel = new QGraphicsTextItem("-- min/L");
+
+    auto *flow1ValueLabel = new QGraphicsTextItem("-- psi");
     flow1ValueLabel->setObjectName("flow1ValueLabel");
     flow1ValueLabel->setFont(QFont("Arial", 15, QFont::Bold));
     flow1ValueLabel->setDefaultTextColor(Qt::black);
     flow1ValueLabel->setPos(750, 480);
     scene->addItem(flow1ValueLabel);
 
-    auto *flow2ValueLabel = new QGraphicsTextItem("-- min/L");
+
+    auto *flow2ValueLabel = new QGraphicsTextItem("-- psi");
     flow2ValueLabel->setObjectName("flow2ValueLabel");
     flow2ValueLabel->setFont(QFont("Arial", 15, QFont::Bold));
     flow2ValueLabel->setDefaultTextColor(Qt::black);
     flow2ValueLabel->setPos(750, 640);
     scene->addItem(flow2ValueLabel);
+
 
     // ========== 文字标注 ==========
     QFont bigFont("Arial", 22, QFont::Bold);
@@ -610,11 +613,12 @@ void buildGasScene(QGraphicsScene *scene, Communication *comm, ControlTab *ctrl)
     }
 
     // ========== 双击区域 ==========
-    auto *flow1Rect = new DoubleClickableRect(QRectF(730, 340, 100, 100), "流量控制器1");
+    // 替换原两个流量双击区域代码
+    auto *flow1Rect = new DoubleClickableRect(QRectF(730, 340, 100, 100), "载气");
     scene->addItem(flow1Rect);
     QObject::connect(flow1Rect, &DoubleClickableRect::doubleClicked, ctrl, &ControlTab::showRealtimeDialog);
 
-    auto *flow2Rect = new DoubleClickableRect(QRectF(730, 480, 100, 100), "流量控制器2");
+    auto *flow2Rect = new DoubleClickableRect(QRectF(730, 480, 100, 100), "参比气");
     scene->addItem(flow2Rect);
     QObject::connect(flow2Rect, &DoubleClickableRect::doubleClicked, ctrl, &ControlTab::showRealtimeDialog);
 

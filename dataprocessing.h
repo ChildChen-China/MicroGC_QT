@@ -1,11 +1,12 @@
 #ifndef DATAPROCESSING_H
-#define DATAPROCESSING_H
+#define DATPROCESSING_H
 
 #include <QDialog>
 #include <QVector>
 #include <QMap>
 #include <QList>
 #include <QString>
+#include <QColor>
 
 class InteractivePlot;
 class QButtonGroup;
@@ -17,80 +18,149 @@ class QComboBox;
 class QDoubleSpinBox;
 class QSpinBox;
 class QCPItemStraightLine;
+class QFormLayout;
+class QGroupBox;
+class QWidget;
 
 //==========================================================
-// 积分设置对话框（非模态）
+// 6 个通道
+//==========================================================
+enum ChannelIdx {
+    CH_RAWA = 0,
+    CH_FILTA,
+    CH_RAWB,
+    CH_FILTB,
+    CH_RAWAB,
+    CH_FILTAB,
+    CH_COUNT
+};
+
+inline QString channelName(int idx)
+{
+    static const char *names[6] = {
+        "A滤波前", "A滤波后",
+        "B滤波前", "B滤波后",
+        "A-B滤波前", "A-B滤波后"
+    };
+    if (idx < 0 || idx >= 6) return QString();
+    return QString::fromUtf8(names[idx]);
+}
+
+//==========================================================
+// 每个文件的数据
+//==========================================================
+struct FileEntry {
+    QString filePath;
+    QString displayName;
+    QVector<double> time;
+    QVector<double> channels[6];
+    bool visibility[6];
+
+    FileEntry() {
+        visibility[CH_RAWA]   = false;
+        visibility[CH_FILTA]  = true;
+        visibility[CH_RAWB]   = false;
+        visibility[CH_FILTB]  = true;
+        visibility[CH_RAWAB]  = false;
+        visibility[CH_FILTAB] = true;
+    }
+
+    void clear() {
+        filePath.clear();
+        displayName.clear();
+        time.clear();
+        for (int i = 0; i < 6; ++i) channels[i].clear();
+    }
+};
+
+// 计算某个文件某通道的颜色（同类色）
+QColor channelColor(int fileIdx, int channelIdx);
+
+//==========================================================
+// 积分设置对话框
 //==========================================================
 class IntegralSettingsDialog : public QDialog
 {
     Q_OBJECT
 public:
     explicit IntegralSettingsDialog(QWidget *parent = nullptr);
+
+    // 文件列表变化时由主对话框调用
+    void setFiles(const QList<FileEntry> &files);
+
 signals:
-    // [修改点] 新增 bool removeMean 参数
-    void settingsChanged(QMap<QString, bool> visibility,
-                         QString integralType,
-                         double waveWidth,
-                         double slopeThreshold,
-                         double advance,
-                         double delay,
-                         bool removeMean);
+    void settingsChanged(QString integralType,
+                         double waveWidth, double slopeThreshold,
+                         double advance, double delay,
+                         bool removeMean,
+                         QString normalizeMode,
+                         QList<QList<bool>> visibility);   // [fileIdx][channel]
 private slots:
     void applySettings();
 private:
-    QCheckBox *m_chkRawA;
-    QCheckBox *m_chkFiltA;
-    QCheckBox *m_chkRawB;
-    QCheckBox *m_chkFiltB;
-    QCheckBox *m_chkRawAB;
-    QCheckBox *m_chkFiltAB;
-    QCheckBox *m_chkRemoveMean; // [修改点] 去均值复选框
+    void rebuildChannelChecks();
+    void loadSettingsToWidgets();
+    void saveSettingsFromWidgets();
+
+    QGroupBox *m_chkGroup;
+    QFormLayout *m_chkFormLayout;
+    QList<QList<QCheckBox*>> m_chkList;
+    QStringList m_fileNames;
+    QList<QList<bool>> m_fileVis;
+
     QComboBox *m_integralType;
     QDoubleSpinBox *m_waveWidth;
     QDoubleSpinBox *m_slopeThreshold;
     QDoubleSpinBox *m_advance;
     QDoubleSpinBox *m_delay;
+    QCheckBox *m_chkRemoveMean;
+    QComboBox *m_normalizeMode;
 };
 
 //==========================================================
-// 积分工作线程类（改为普通类，取消多线程）
+// 积分工作类（同步，无多线程）
 //==========================================================
 class IntegrationWorker : public QObject
 {
     Q_OBJECT
 public:
     explicit IntegrationWorker(QObject *parent = nullptr);
-    void setData(const QVector<double> &time,
-                 const QVector<double> &rawA,
-                 const QVector<double> &filtA,
-                 const QVector<double> &rawB,
-                 const QVector<double> &filtB,
-                 const QVector<double> &rawAB,
-                 const QVector<double> &filtAB);
+
+    void setFiles(const QList<FileEntry> &files);        // 传入已完成去均值处理的数据
     void setParameters(double waveWidth, double slopeThreshold,
                        double advance, double delay,
                        const QString &integralType,
-                       QMap<QString, bool> visibility);
+                       const QString &normalizeMode);
+
 public slots:
     void processAutoIntegration();
 signals:
     void integrationFinished(const QList<QStringList> &results);
     void warningsGenerated(const QList<QString> &warnings);
 private:
+    // 每个通道的积分结果
+    struct PeakItem {
+        QStringList row;    // 不含归一化列
+        int fileIdx;
+        int channelIdx;
+        double area;
+    };
+
     void integrateChannel(const QVector<double> &x, const QVector<double> &y,
-                          const QString &channelName, const QString &type,
-                          QList<QStringList> &results);
+                          const QString &fileLabel, const QString &channelLabel,
+                          int fileIdx, int channelIdx,
+                          QList<PeakItem> &peaks);
     double calculateArea(const QVector<double> &x, const QVector<double> &y,
                          int startIdx, int endIdx,
                          const QString &type);
-    QVector<double> m_time;
-    QVector<double> m_rawA, m_filtA, m_rawB, m_filtB, m_rawAB, m_filtAB;
+
+    QList<FileEntry> m_files;
     double m_waveWidth;
     double m_slopeThreshold;
     double m_advance;
     double m_delay;
     QString m_integralType;
-    QMap<QString, bool> m_visibility;
+    QString m_normalizeMode;
     QList<QString> m_warnings;
 };
 
@@ -103,8 +173,13 @@ class DataProcessingDialog : public QDialog
 public:
     explicit DataProcessingDialog(QWidget *parent = nullptr);
     ~DataProcessingDialog();
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private slots:
     void openFile();
+    void clearAll();
     void showIntegralSettings();
     void toggleManualIntegral(bool active);
     void autoIntegrate();
@@ -112,24 +187,29 @@ private slots:
     void exportData();
     void resetView();
     void applyZoomMode(int id);
-    // [修改点] 新增 bool removeMean 参数
-    void updateSettings(QMap<QString, bool> visibility,
-                        QString integralType,
-                        double waveWidth,
-                        double slopeThreshold,
-                        double advance,
-                        double delay,
-                        bool removeMean);
+    void updateSettings(QString integralType,
+                        double waveWidth, double slopeThreshold,
+                        double advance, double delay,
+                        bool removeMean,
+                        QString normalizeMode,
+                        QList<QList<bool>> visibility);
     void onIntegrationFinished(const QList<QStringList> &results);
+
 private:
     void setupPlots();
+    void rebuildGraphs();
     void updatePlotVisibility();
-    void applyDataProcessing(); // [修改点] 新增：根据去均值开关刷新数据
+    void applyDataProcessing();
+    void handlePlotHover(const QPoint &pos);
+    bool parseFile(const QString &path, FileEntry &out);
     void addResultToTable(const QString &fileName, const QString &component,
                           double start, double end, const QString &type,
-                          double retention, double area);
+                          double retention, double area, double normalized);
     double calculateArea(const QVector<double> &x, const QVector<double> &y,
                          int startIdx, int endIdx, const QString &type);
+
+    // 获取某文件某通道的处理后数据（按去均值开关）
+    QVector<double> processedChannel(const FileEntry &f, int chIdx) const;
 
     InteractivePlot *m_plot;
     QButtonGroup *m_zoomGroup;
@@ -143,23 +223,18 @@ private:
     QCPItemStraightLine *m_startLine;
     QCPItemStraightLine *m_endLine;
 
-    // 原始数据（绝对不修改）
-    QVector<double> m_timeOrig;
-    QVector<double> m_rawAOrig, m_filtAOrig, m_rawBOrig, m_filtBOrig, m_rawABOrig, m_filtABOrig;
+    QList<FileEntry> m_files;    // 原始数据
 
-    // 当前用于绘图和积分的数据（可能是原始数据，也可能是去均值后的数据）
-    QVector<double> m_time;
-    QVector<double> m_rawA, m_filtA, m_rawB, m_filtB, m_rawAB, m_filtAB;
-
-    QMap<QString, bool> m_visibility;
     QString m_integralType;
     double m_waveWidth;
     double m_slopeThreshold;
     double m_advance;
     double m_delay;
-    bool m_removeMean; // [修改点] 去均值标志
+    bool m_removeMean;
+    QString m_normalizeMode;
 
-    IntegrationWorker *m_worker; // [修改点] 取消 QThread
+    IntegrationWorker *m_worker;
     QList<QString> m_manualWarnings;
 };
+
 #endif // DATAPROCESSING_H

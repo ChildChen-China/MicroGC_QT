@@ -289,6 +289,199 @@ void MonitorTab::setTcdPowered(bool powered)
 //==========================================================
 // 数据采集开始（从当前时刻）
 //==========================================================
+void MonitorTab::startAutoDataSave(const QString &path, const QString &fileNamePrefix, int cycleIndex)
+{
+    if (m_isSaving) return;
+
+    if (cycleIndex == 1) {
+        m_autoCycleOffsetSec = 0.0;
+    }
+    m_autoCycleWaitFirst = true;
+    m_isAutoCycle = true;
+
+    // 创建保存目录
+    QDir dir;
+    dir.mkpath(path);
+    QString fullPath = path;
+    if (!fullPath.endsWith('/') && !fullPath.endsWith('\\'))
+        fullPath += '/';
+
+    QString fileName = QString("%1_第%2次_%3.txt")
+                           .arg(fileNamePrefix)
+                           .arg(cycleIndex, 2, 10, QChar('0'))
+                           .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    fullPath += fileName;
+
+    m_isSaving = true;
+    if (m_saveFile.isOpen()) {
+        m_saveStream.flush();
+        m_saveFile.close();
+    }
+    m_saveFile.setFileName(fullPath);
+    if (!m_saveFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        qWarning() << "无法打开自动测量文件:" << fullPath;
+        m_isSaving = false;
+        m_isAutoCycle = false;
+        return;
+    }
+    m_saveStream.setDevice(&m_saveFile);
+    m_saveStream << "时间 滤波前A 滤波后A 滤波前B 滤波后B 滤波前A-B 滤波后A-B\n";
+
+    emit logMessage("文件操作", QString("自动测量开始保存至 %1").arg(fullPath));
+}
+double MonitorTab::currentTcdSeconds() const
+{
+    if (!m_tcdPowered) return 0.0;
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    return (m_tcdActiveMs + (now - m_tcdLastTick)) / 1000.0;
+}
+
+void MonitorTab::stopDataSave()
+{
+    if (m_isAutoCycle) {
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        double tcdNow = (m_tcdActiveMs + (now - m_tcdLastTick)) / 1000.0;
+        double thisCycleDuration = tcdNow - m_autoCycleBaseSec;
+        if (thisCycleDuration < 0) thisCycleDuration = 0;
+
+        const double AUTO_CYCLE_GAP_SEC = 2.0;
+        m_autoCycleOffsetSec += thisCycleDuration + AUTO_CYCLE_GAP_SEC;
+
+        m_isAutoCycle = false;
+    }
+
+    m_isSaving = false;
+    m_autoStopTimer->stop();
+    if (m_saveFile.isOpen()) {
+        m_saveStream.flush();
+        m_saveFile.close();
+        emit logMessage("文件操作", "停止写入数据文件");
+    }
+}
+
+//==========================================================
+// 极性反转
+//==========================================================
+void MonitorTab::startPolarityReversal()
+{
+    m_polarityActive = true;
+    emit logMessage("TCD", "极性反转开启");
+}
+
+void MonitorTab::stopPolarityReversal()
+{
+    m_polarityActive = false;
+    emit logMessage("TCD", "极性反转关闭");
+}
+
+//==========================================================
+// 数据更新
+//==========================================================
+void MonitorTab::onDataUpdated()
+{
+    if (!m_comm) return;
+    if (!m_tcdPowered) return;
+
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    double tcdSec = (m_tcdActiveMs + (now - m_tcdLastTick)) / 1000.0;
+
+    // ★ 监视页时间轴：永远用 TCD 累计秒（连续单调）
+    double monitorTimeSec = tcdSec;
+
+    // ★ 文件时间轴：仅在保存时使用
+    //    - 自动流程内：(tcdSec - base) + offset
+    //    - 手动保存：同 TCD 秒
+    double fileTimeSec;
+    if (m_isAutoCycle) {
+        if (m_autoCycleWaitFirst) {
+            m_autoCycleBaseSec = tcdSec;
+            m_autoCycleWaitFirst = false;
+        }
+        fileTimeSec = (tcdSec - m_autoCycleBaseSec) + m_autoCycleOffsetSec;
+    } else {
+        fileTimeSec = tcdSec;
+    }
+
+    double rawA  = m_comm->tcdVoltageA();
+    double rawB  = m_comm->tcdVoltageB();
+    double rawAB = m_comm->tcdVoltageAB();
+
+    double dispA  = m_polarityActive ? -rawA  : rawA;
+    double dispB  = m_polarityActive ? -rawB  : rawB;
+    double dispAB = m_polarityActive ? -rawAB : rawAB;
+
+    // ★ 监视页数组：用 monitorTimeSec（永远连续）
+    m_time.append(monitorTimeSec);
+    m_rawA.append(rawA);
+    m_rawB.append(rawB);
+    m_rawAB.append(rawAB);
+    m_dispA.append(dispA);
+    m_dispB.append(dispB);
+    m_dispAB.append(dispAB);
+
+    while (m_time.size() > m_collectPoints) {
+        m_time.removeFirst();
+        m_rawA.removeFirst();
+        m_rawB.removeFirst();
+        m_rawAB.removeFirst();
+        m_dispA.removeFirst();
+        m_dispB.removeFirst();
+        m_dispAB.removeFirst();
+        if (!m_filtA.isEmpty()) m_filtA.removeFirst();
+        if (!m_filtB.isEmpty()) m_filtB.removeFirst();
+        if (!m_filtAB.isEmpty()) m_filtAB.removeFirst();
+    }
+
+    int window = qMax(1, m_averagePoints);
+    auto smooth = [window](const QVector<double> &input) -> QVector<double> {
+        QVector<double> output(input.size());
+        for (int i = 0; i < input.size(); ++i) {
+            if (qIsNaN(input[i])) { output[i] = qQNaN(); continue; }
+            int start = qMax(0, i - window + 1);
+            int end = i;
+            double sum = 0.0;
+            int count = 0;
+            for (int j = start; j <= end; ++j) {
+                if (qIsNaN(input[j])) continue;
+                sum += input[j];
+                count++;
+            }
+            output[i] = (count > 0) ? (sum / count) : qQNaN();
+        }
+        return output;
+    };
+    m_filtA = smooth(m_dispA);
+    m_filtB = smooth(m_dispB);
+    m_filtAB = smooth(m_dispAB);
+
+    updatePlots(false);
+
+    // ★ 文件写入：用 fileTimeSec
+    if (m_isSaving && m_saveFile.isOpen() && !m_time.isEmpty()) {
+        int idx = m_time.size() - 1;
+
+        QString dataLine;
+        if (qIsNaN(m_dispA.at(idx))) {
+            dataLine = QString("%1 nan nan nan nan nan nan")
+            .arg(fileTimeSec, 0, 'f', 6);
+        } else {
+            dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
+            .arg(fileTimeSec, 0, 'f', 6)
+                .arg(m_dispA.at(idx), 0, 'f', 1)
+                .arg(m_filtA.at(idx), 0, 'f', 1)
+                .arg(m_dispB.at(idx), 0, 'f', 1)
+                .arg(m_filtB.at(idx), 0, 'f', 1)
+                .arg(m_dispAB.at(idx), 0, 'f', 1)
+                .arg(m_filtAB.at(idx), 0, 'f', 1);
+        }
+        m_saveStream << dataLine << "\n";
+    }
+}
+
+
+//==========================================================
+// 手动数据采集开始（点击电磁阀触发）
+//==========================================================
 void MonitorTab::startDataSaveNow()
 {
     if (m_isSaving) return;
@@ -326,123 +519,6 @@ void MonitorTab::startDataSaveNow()
     }
 }
 
-void MonitorTab::stopDataSave()
-{
-    m_isSaving = false;
-    m_autoStopTimer->stop();
-    if (m_saveFile.isOpen()) {
-        m_saveStream.flush();
-        m_saveFile.close();
-        emit logMessage("文件操作", "停止写入数据文件");
-    }
-}
-
-//==========================================================
-// 极性反转
-//==========================================================
-void MonitorTab::startPolarityReversal()
-{
-    m_polarityActive = true;
-    emit logMessage("TCD", "极性反转开启");
-}
-
-void MonitorTab::stopPolarityReversal()
-{
-    m_polarityActive = false;
-    emit logMessage("TCD", "极性反转关闭");
-}
-
-//==========================================================
-// 数据更新
-//==========================================================
-void MonitorTab::onDataUpdated()
-{
-    if (!m_comm) return;
-
-    if (!m_tcdPowered) return;
-
-    qint64 now = QDateTime::currentMSecsSinceEpoch();
-    double timeSec = (m_tcdActiveMs + (now - m_tcdLastTick)) / 1000.0;
-
-    double rawA = m_comm->tcdVoltageA();
-    double rawB = m_comm->tcdVoltageB();
-    double rawAB = m_comm->tcdVoltageAB();
-
-    // 应用极性反转（只影响新数据点）
-    double dispA  = m_polarityActive ? -rawA  : rawA;
-    double dispB  = m_polarityActive ? -rawB  : rawB;
-    double dispAB = m_polarityActive ? -rawAB : rawAB;
-
-    m_time.append(timeSec);
-    m_rawA.append(rawA);
-    m_rawB.append(rawB);
-    m_rawAB.append(rawAB);
-    m_dispA.append(dispA);
-    m_dispB.append(dispB);
-    m_dispAB.append(dispAB);
-
-    while (m_time.size() > m_collectPoints) {
-        m_time.removeFirst();
-        m_rawA.removeFirst();
-        m_rawB.removeFirst();
-        m_rawAB.removeFirst();
-        m_dispA.removeFirst();
-        m_dispB.removeFirst();
-        m_dispAB.removeFirst();
-        if (!m_filtA.isEmpty()) m_filtA.removeFirst();
-        if (!m_filtB.isEmpty()) m_filtB.removeFirst();
-        if (!m_filtAB.isEmpty()) m_filtAB.removeFirst();
-    }
-
-    // 滤波基于显示值（已反转），保证显示和保存一致
-    int window = qMax(1, m_averagePoints);
-    auto smooth = [window](const QVector<double> &input) -> QVector<double> {
-        QVector<double> output(input.size());
-        for (int i = 0; i < input.size(); ++i) {
-            if (qIsNaN(input[i])) {
-                output[i] = qQNaN();
-                continue;
-            }
-            int start = qMax(0, i - window + 1);
-            int end = i;
-            double sum = 0.0;
-            int count = 0;
-            for (int j = start; j <= end; ++j) {
-                if (qIsNaN(input[j])) continue;
-                sum += input[j];
-                count++;
-            }
-            output[i] = (count > 0) ? (sum / count) : qQNaN();
-        }
-        return output;
-    };
-    m_filtA = smooth(m_dispA);
-    m_filtB = smooth(m_dispB);
-    m_filtAB = smooth(m_dispAB);
-
-    updatePlots(false);
-
-    // 保存文件：写显示值（已应用反转），时间 6 位小数，电压 1 位小数
-    if (m_isSaving && m_saveFile.isOpen() && !m_time.isEmpty()) {
-        int idx = m_time.size() - 1;
-
-        QString dataLine;
-        if (qIsNaN(m_dispA.at(idx))) {
-            dataLine = QString("%1 nan nan nan nan nan nan")
-            .arg(m_time.at(idx), 0, 'f', 6);
-        } else {
-            dataLine = QString("%1 %2 %3 %4 %5 %6 %7")
-            .arg(m_time.at(idx), 0, 'f', 6)
-                .arg(m_dispA.at(idx), 0, 'f', 1)
-                .arg(m_filtA.at(idx), 0, 'f', 1)
-                .arg(m_dispB.at(idx), 0, 'f', 1)
-                .arg(m_filtB.at(idx), 0, 'f', 1)
-                .arg(m_dispAB.at(idx), 0, 'f', 1)
-                .arg(m_filtAB.at(idx), 0, 'f', 1);
-        }
-        m_saveStream << dataLine << "\n";
-    }
-}
 
 //==========================================================
 // 控制面板
